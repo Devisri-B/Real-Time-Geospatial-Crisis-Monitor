@@ -1,0 +1,10 @@
+pandas
+praw
+sqlalchemy
+psycopg2-binary
+textblob
+streamlit
+folium
+streamlit-folium
+spacy
+geopy
