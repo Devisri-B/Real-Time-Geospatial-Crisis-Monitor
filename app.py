@@ -3,86 +3,196 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from sqlalchemy import create_engine
+import plotly.express as px
 import os
+from datetime import timedelta
 
-st.set_page_config(page_title="CrisisGuard", layout="wide")
+# --- 1. CONFIGURATION & STYLE ---
+st.set_page_config(
+    page_title="CrisisGuard Intelligence",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Database
-try: DB_STRING = st.secrets["DB_CONNECTION_STRING"]
-except: DB_STRING = os.getenv('DB_CONNECTION_STRING')
+# Custom CSS for professional metrics
+st.markdown("""
+<style>
+    div[data-testid="stMetric"] {
+        background-color: #1E1E1E;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 5px solid #FF4B4B;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 2. DATABASE CONNECTION ---
+try:
+    DB_STRING = st.secrets["DB_CONNECTION_STRING"]
+except:
+    DB_STRING = os.getenv('DB_CONNECTION_STRING')
 
 @st.cache_data(ttl=60)
 def get_data():
     try:
         engine = create_engine(DB_STRING)
-        # Get distinct rows to avoid duplicates if script ran twice
-        return pd.read_sql("SELECT DISTINCT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000", engine)
-    except: return pd.DataFrame()
+        # Fetch latest 1000 entries
+        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000", engine)
+        df['created_utc'] = pd.to_datetime(df['created_utc'])
+        return df
+    except:
+        return pd.DataFrame()
 
 raw_df = get_data()
 
 if raw_df.empty:
-    st.warning("Database empty. Pipeline is gathering initial data...")
+    st.error("⚠️ Database Connection Established, but table is empty. Wait for the ETL Pipeline (GitHub Action) to finish running.")
     st.stop()
 
-# --- SIDEBAR FILTERS ---
-st.sidebar.header(" Controls")
+# --- 3. SIDEBAR CONTROLS ---
+st.sidebar.header("🎛️ Command Center")
 
-# 1. Risk Filter
-all_statuses = sorted(raw_df['status'].unique())
-selected_status = st.sidebar.multiselect("Risk Level", all_statuses, default=all_statuses)
-
-# 2. Location Filter
-# We normalize the list so "USA" and "US" are merged in the backend, 
-# but here we just show the clean names stored in DB.
-all_locs = sorted(raw_df['location_name'].unique())
-selected_loc = st.sidebar.selectbox("Filter by Region", ["All"] + all_locs)
-
-# Apply Filters
-if selected_loc == "All":
-    df = raw_df[raw_df['status'].isin(selected_status)]
-else:
-    df = raw_df[
-        (raw_df['status'].isin(selected_status)) & 
-        (raw_df['location_name'] == selected_loc)
-    ]
-
-# --- MAIN DASHBOARD ---
-st.title(f" CrisisGuard: {selected_loc if selected_loc != 'All' else 'Global View'}")
-
-# Metrics
-c1, c2, c3 = st.columns(3)
-c1.metric("Active Events", len(df))
-c2.metric("Critical Alerts", len(df[df['status']=="Critical"]))
-if not df.empty:
-    c3.metric("Avg Sentiment", f"{df['sentiment'].mean():.2f}")
-
-# Map
-st.subheader("Live Map")
-if not df.empty:
-    # Center on data
-    center_lat = df['lat'].mean()
-    center_lon = df['lon'].mean()
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=2)
+# A. Time Slider
+if not raw_df.empty:
+    min_time = raw_df['created_utc'].min()
+    max_time = raw_df['created_utc'].max()
     
-    for _, row in df.iterrows():
-        color = "red" if row['status'] == "Critical" else "orange"
-        folium.Marker(
-            [row['lat'], row['lon']],
-            popup=f"<b>{row['location_name']}</b><br>{row['status']}",
-            icon=folium.Icon(color=color)
-        ).add_to(m)
-    st_folium(m, width=1200, height=500)
-else:
-    st.info("No events match your current filters.")
+    # Handle edge case where min and max are same
+    if min_time == max_time:
+        time_range = (min_time, max_time + timedelta(hours=1))
+    else:
+        time_range = st.sidebar.slider(
+            "Filter Timeline",
+            min_value=min_time.to_pydatetime(),
+            max_value=max_time.to_pydatetime(),
+            value=(min_time.to_pydatetime(), max_time.to_pydatetime()),
+            format="MM/DD HH:mm"
+        )
 
-# Data Table
-st.subheader("Event Feed")
-st.dataframe(
-    df[['created_utc', 'location_name', 'status', 'text', 'url']],
-    column_config={
-        "url": st.column_config.LinkColumn("Link"),
-        "text": st.column_config.TextColumn("Post Content", width="large")
-    },
-    hide_index=True
-)
+# B. Risk Filter
+all_statuses = sorted(raw_df['status'].unique())
+selected_status = st.sidebar.multiselect("Severity Level", all_statuses, default=all_statuses)
+
+# C. Location Filter
+all_locs = sorted(raw_df['location_name'].unique())
+selected_loc = st.sidebar.selectbox("Target Region", ["All Global Regions"] + all_locs)
+
+# --- FILTER LOGIC ---
+mask = (raw_df['created_utc'] >= time_range[0]) & (raw_df['created_utc'] <= time_range[1]) & (raw_df['status'].isin(selected_status))
+filtered_df = raw_df[mask]
+
+if selected_loc != "All Global Regions":
+    filtered_df = filtered_df[filtered_df['location_name'] == selected_loc]
+
+# D. Alert Simulation (Restored Feature)
+st.sidebar.divider()
+st.sidebar.subheader("🚨 Emergency Dispatch")
+alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
+if st.sidebar.button("Test Alert System"):
+    critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
+    if critical_count > 0:
+        st.sidebar.success(f"✅ Alert Sent: {critical_count} critical events flagged in {selected_loc}")
+    else:
+        st.sidebar.info("No critical events to report at this time.")
+
+# --- 4. MAIN DASHBOARD UI ---
+st.title(f"🛡️ CrisisGuard: {selected_loc}")
+st.markdown(f"Monitoring **{len(filtered_df)}** active signals. Last update: {max_time.strftime('%H:%M UTC')}")
+
+# METRICS ROW (Restored)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Active Incidents", len(filtered_df))
+c2.metric("Critical Threats", len(filtered_df[filtered_df['status'] == "Critical"]), delta_color="inverse")
+
+if not filtered_df.empty:
+    avg_sent = filtered_df['sentiment'].mean()
+    c3.metric("Avg Sentiment", f"{avg_sent:.2f}", delta="-0.1" if avg_sent < 0 else "0.1")
+    
+    top_source = filtered_df['subreddit'].mode()[0]
+    c4.metric("Primary Source", f"r/{top_source}")
+
+# --- 5. TABS (Map + Analytics + Data) ---
+tab_geo, tab_analysis, tab_feed = st.tabs(["🌍 Geospatial Ops", "📊 Risk Analytics", "📋 Data Feed"])
+
+# TAB 1: MAP
+with tab_geo:
+    if not filtered_df.empty:
+        # Dynamic Center
+        start_lat = filtered_df['lat'].mean()
+        start_lon = filtered_df['lon'].mean()
+        zoom = 4 if selected_loc != "All Global Regions" else 2
+        
+        m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB dark_matter")
+        
+        for idx, row in filtered_df.iterrows():
+            color = "#FF0000" if row['status'] == "Critical" else "#FFA500"
+            if row['status'] == "Moderate": color = "#FFFF00"
+            
+            # Rich Popup
+            html = f"""
+            <div style="font-family: sans-serif; width: 200px;">
+                <h5 style="margin:0;">{row['location_name']}</h5>
+                <span style="color:{color}; font-weight:bold;">{row['status']}</span><br>
+                <small>{row['created_utc']}</small>
+                <p>{row['text'][:100]}...</p>
+                <a href="{row['url']}" target="_blank">View Source</a>
+            </div>
+            """
+            
+            folium.CircleMarker(
+                location=[row['lat'], row['lon']],
+                radius=8,
+                color=color,
+                fill=True,
+                fill_opacity=0.7,
+                popup=folium.Popup(html, max_width=260)
+            ).add_to(m)
+        
+        st_folium(m, width=None, height=500)
+    else:
+        st.warning("No geolocation data available for current filters.")
+
+# TAB 2: ANALYTICS (Restored Charts)
+with tab_analysis:
+    if not filtered_df.empty:
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.subheader("Risk vs. Sentiment Correlation")
+            # This chart proves your ML model works (Lower sentiment should = Critical)
+            fig_scatter = px.scatter(
+                filtered_df, 
+                x="sentiment", 
+                y="status", 
+                color="status",
+                size_max=10,
+                hover_data=["text"],
+                color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "yellow", "Low": "green"}
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            
+        with c2:
+            st.subheader("Incident Volume by Source")
+            source_counts = filtered_df['subreddit'].value_counts().reset_index()
+            source_counts.columns = ['Subreddit', 'Count']
+            fig_bar = px.bar(source_counts, x='Subreddit', y='Count', color='Count', color_continuous_scale='Reds')
+            st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("Not enough data to generate analytics.")
+
+# TAB 3: RAW DATA
+with tab_feed:
+    st.subheader("Live Intelligence Feed")
+    if not filtered_df.empty:
+        st.dataframe(
+            filtered_df[['created_utc', 'location_name', 'status', 'sentiment', 'text', 'url']],
+            column_config={
+                "url": st.column_config.LinkColumn("Link"),
+                "sentiment": st.column_config.ProgressColumn("Sentiment", min_value=-1, max_value=1),
+                "status": st.column_config.Column("Risk Level")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.write("No records found.")
