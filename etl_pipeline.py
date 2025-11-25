@@ -17,9 +17,7 @@ from nltk.corpus import stopwords
 REDDIT_ID = os.getenv('REDDIT_CLIENT_ID')
 REDDIT_SECRET = os.getenv('REDDIT_CLIENT_SECRET')
 DB_STRING = os.getenv('DB_CONNECTION_STRING')
-
-# How many days of data to keep?
-DATA_RETENTION_DAYS = 15
+DATA_RETENTION_DAYS = 30 
 
 # --- INIT MODELS ---
 print("Loading AI Models...")
@@ -36,9 +34,8 @@ except Exception as e:
     print(f"Model Loading Failed: {e}")
     exit()
 
-geolocator = Nominatim(user_agent="crisis_monitor_v5_cleanup")
+geolocator = Nominatim(user_agent="crisis_monitor_v6_dedup")
 stop = set(stopwords.words('english')) - {"not", "no"}
-
 SUBREDDITS = ['mentalhealth', 'depression', 'SuicideWatch', 'anxiety',
     'stress', 'offmychest', 'lonely', 'BPD', 'ptsd',
     'socialanxiety', 'bipolar', 'addiction', 'traumatoolbox', 'CPTSD',
@@ -46,11 +43,9 @@ SUBREDDITS = ['mentalhealth', 'depression', 'SuicideWatch', 'anxiety',
     'schizophrenia', 'insomnia', 'panicattacks', 'ADHD', 'AskReddit',
     'worldnews', 'news']
 
-# --- CORE FUNCTIONS ---
-
 def get_reddit():
     if not REDDIT_ID: return []
-    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v5')
+    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v6')
     posts = []
     for sub in SUBREDDITS:
         try:
@@ -59,7 +54,7 @@ def get_reddit():
                     'id': post.id,
                     'created_utc': datetime.datetime.fromtimestamp(post.created_utc),
                     'subreddit': sub,
-                    'text': f"{post.title} {post.selftext}"[:2000], # Truncate to save space
+                    'text': f"{post.title} {post.selftext}"[:2000],
                     'url': post.url
                 })
         except: pass
@@ -75,10 +70,7 @@ def clean_for_model(text):
 def smart_geocode(text):
     doc = nlp(text)
     candidates = [ent.text for ent in doc.ents if ent.label_ == 'GPE']
-    
-    # Blocklist to prevent false positives
     blocklist = ["AI", "Phobia", "Pandora", "Olivia", "Imagine", "Meth", "Help", "Reddit", "YouTube", "Zoom", "Discord"]
-
     for loc_name in candidates:
         if len(loc_name) < 3 or loc_name.title() in blocklist: continue
         try:
@@ -92,16 +84,11 @@ def smart_geocode(text):
     return None, None, None
 
 def cleanup_old_data():
-    """Deletes rows older than DATA_RETENTION_DAYS to free up space."""
     print(f"5. Maintenance: Cleaning data older than {DATA_RETENTION_DAYS} days...")
     engine = create_engine(DB_STRING)
-    
-    # Calculate cutoff date
     cutoff = datetime.datetime.now() - datetime.timedelta(days=DATA_RETENTION_DAYS)
-    
     try:
         with engine.connect() as conn:
-            # Using SQLAlchemy 'text' for raw SQL
             query = text(f"DELETE FROM crisis_events_v4 WHERE created_utc < '{cutoff}'")
             result = conn.execute(query)
             conn.commit()
@@ -109,46 +96,65 @@ def cleanup_old_data():
     except Exception as e:
         print(f"   - Cleanup warning: {e}")
 
+# --- NEW: DEDUPLICATION FUNCTION ---
+def filter_existing_posts(df, engine):
+    """Checks DB for existing IDs and removes them from the dataframe."""
+    if df.empty: return df
+    
+    new_ids = tuple(df['id'].tolist())
+    if not new_ids: return df
+    
+    # Query DB for these specific IDs
+    query = text(f"SELECT id FROM crisis_events_v4 WHERE id IN :ids")
+    
+    try:
+        with engine.connect() as conn:
+            existing = pd.read_sql(query, conn, params={"ids": new_ids})
+            existing_ids = set(existing['id'].tolist())
+            
+        unique_df = df[~df['id'].isin(existing_ids)]
+        print(f"   - Deduplication: {len(df)} fetched -> {len(unique_df)} new unique posts.")
+        return unique_df
+    except Exception as e:
+        # If table doesn't exist yet, all posts are new
+        return df
+
 def run_pipeline():
-    print("1. Extracting Data...")
+    print("1. Extracting...")
     df = get_reddit()
     if df.empty: return
 
-    print("2. Risk Analysis...")
+    # --- APPLY DEDUPLICATION ---
+    engine = create_engine(DB_STRING)
+    df = filter_existing_posts(df, engine)
+
+    if df.empty:
+        print("   - No new unique posts to process.")
+        return
+
+    print("2. Analysis...")
     df['clean_text'] = df['text'].apply(clean_for_model)
     features = vectorizer.transform(df['clean_text'])
     df['risk_class'] = model.predict(features) 
     df['sentiment'] = df['text'].apply(lambda x: TextBlob(str(x)).sentiment.polarity)
 
-    def verify_risk(row):
+    def get_status(row):
         r = row['risk_class']
         s = row['sentiment']
-
-        # Case 1: Model says HIGH RISK (2)
         if r == 2:
-            if s < -0.05: # Even slightly negative sentiment confirms it
-                return "Critical"
-            return "High" # Trust the model, keep it High even if sentiment is neutral
-
-        # Case 2: Model says MODERATE RISK (1)
+            if s < -0.05: return "Critical"
+            return "High"
         if r == 1:
-            if s < -0.5: # Extremely negative sentiment -> Escalate
-                return "Critical"
-            if s < -0.15: # Moderately negative -> Escalate
-                return "High"
+            if s < -0.3: return "Critical"
+            if s < -0.1: return "High"
             return "Moderate"
-
-        # Case 3: Model says LOW RISK (0)
-        # Safety Net: If model missed it but sentiment is alarming
-        if s < -0.7: 
-            return "Moderate" # Flag for manual review
-            
+        if s < -0.6: return "Moderate" 
         return "Low"
 
-    df['status'] = df.apply(verify_risk, axis=1)
+    df['status'] = df.apply(get_status, axis=1)
     active_df = df[df['status'] != "Low"].copy()
     
-    print(f"3. Geolocating {len(active_df)} alerts...")
+    print(f"3. Geolocating {len(active_df)} new alerts...")
     geo_results = active_df['text'].apply(smart_geocode)
     active_df['location_name'] = [res[0] for res in geo_results]
     active_df['lat'] = [res[1] for res in geo_results]
@@ -158,12 +164,10 @@ def run_pipeline():
     
     print(f"4. Saving {len(final_df)} rows...")
     if not final_df.empty:
-        engine = create_engine(DB_STRING)
         cols = ['id', 'created_utc', 'subreddit', 'text', 'status', 'sentiment', 'url', 'location_name', 'lat', 'lon']
         final_df[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False)
-        print("   - Upload Success.")
-
-    # Run Cleanup at the end
+        print("   - Success.")
+    
     cleanup_old_data()
 
 if __name__ == "__main__":
