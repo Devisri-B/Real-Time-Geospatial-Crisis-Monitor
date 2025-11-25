@@ -54,7 +54,7 @@ def get_reddit():
     for sub in SUBREDDITS:
         try:
             # Grab 50 to ensure we find enough valid locations
-            for post in reddit.subreddit(sub).new(limit=50):
+            for post in reddit.subreddit(sub).new(limit=1000):
                 posts.append({
                     'id': post.id,
                     'created_utc': datetime.datetime.fromtimestamp(post.created_utc),
