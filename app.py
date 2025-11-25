@@ -62,11 +62,11 @@ def get_data():
 raw_df = get_data()
 
 if raw_df.empty:
-    st.error("⚠️ Connection established but no data found. Please wait for the pipeline.")
+    st.error(" Connection established but no data found. Please wait for the pipeline.")
     st.stop()
 
 # --- 3. SIDEBAR CONTROLS ---
-st.sidebar.header("🎛️ Command Center")
+st.sidebar.header("Command Center")
 
 # A. Time Slider
 min_time = raw_df['created_utc'].min()
@@ -102,18 +102,31 @@ if 'location_name' in filtered_df.columns:
 
 # D. Alert Simulation
 st.sidebar.divider()
-st.sidebar.subheader("🚨 Emergency Dispatch")
-alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
+st.sidebar.subheader("Emergency Dispatch")
+alert_email = st.sidebar.text_input("Email", placeholder="admin@xxx.com")
 if st.sidebar.button("Test Alert System"):
     critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
     if critical_count > 0:
-        st.sidebar.success(f"✅ Alert Sent: {critical_count} critical events flagged in {selected_loc}")
+        st.sidebar.success(f" Alert Sent: {critical_count} critical events flagged in {selected_loc}")
     else:
         st.sidebar.info("No critical events to report at this time.")
 
 # --- 4. MAIN DASHBOARD UI ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
-st.markdown(f"Monitoring **{len(filtered_df)}** active signals.")
+# Calculate Last Updated Time
+if not filtered_df.empty:
+    # Get the newest timestamp from the data
+    latest_time = filtered_df['created_utc'].max()
+    # Format it to look nice (e.g., "November 25, 2025 08:30 UTC")
+    last_updated_str = latest_time.strftime('%B %d, %Y %H:%M UTC')
+else:
+    last_updated_str = "No data available"
+
+# Update the subtitle to include the date
+st.markdown(f"""
+Monitoring **{len(filtered_df)}** active signals.  
+<span style="color: gray; font-size: 0.9em;">🕒 Last Updated: {last_updated_str}</span>
+""", unsafe_allow_html=True)
 
 # METRICS
 c1, c2, c3, c4 = st.columns(4)
@@ -140,7 +153,7 @@ if not filtered_df.empty and 'sentiment' in filtered_df.columns:
             c4.metric("Primary Source", "N/A")
 
 # --- 5. TABS ---
-tab_geo, tab_analysis, tab_feed = st.tabs(["🌍 Geospatial Ops", "📊 Risk Analytics", "📋 Data Feed"])
+tab_geo, tab_analysis, tab_feed = st.tabs(["Geospatial Ops", "Risk Analytics", "Data Feed"])
 
 # TAB 1: MAP (CLUSTERED)
 with tab_geo:
@@ -158,14 +171,14 @@ with tab_geo:
         marker_cluster = MarkerCluster().add_to(m)
         
         for idx, row in map_data.iterrows():
-            # Still use jitter so they don't sit perfectly on top of each other inside the cluster
+            # use jitter so locations don't sit perfectly on top of each other inside the cluster
             seed = int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))) 
             np.random.seed(seed)
             jitter_lat = np.random.uniform(-0.005, 0.005) 
             jitter_lon = np.random.uniform(-0.005, 0.005)
             
             color = "red" if row.get('status') == "Critical" else "orange"
-            if row.get('status') == "Moderate": color = "gold" # Better visibility than yellow on white map
+            if row.get('status') == "Moderate": color = "gold" 
             
             html = f"""
             <div style="font-family: sans-serif; width: 200px; color: #333;">
