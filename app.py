@@ -18,18 +18,20 @@ st.set_page_config(
 # Custom CSS for Light Mode
 st.markdown("""
 <style>
+    /* Force Light Mode Styles for Metrics */
     div[data-testid="stMetric"] {
-        background-color: #F0F2F6;
+        background-color: #F0F2F6; /* Light Grey */
         padding: 15px;
         border-radius: 5px;
         border-left: 5px solid #FF4B4B;
-        color: #31333F;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        color: #31333F; /* Dark Text */
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
+    /* Remove dark background from charts */
     .js-plotly-plot .plotly .main-svg {
         background: rgba(0,0,0,0) !important;
     }
-    /* Increase font size for tabs */
+    /* Tabs Font Size */
     button[data-baseweb="tab"] div p {
         font-size: 18px !important;
         font-weight: 600 !important;
@@ -50,7 +52,7 @@ def get_data():
         df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000", engine)
         df['created_utc'] = pd.to_datetime(df['created_utc'])
         
-        # Data Cleaning: Ensure numerical columns are actually numbers
+        # Ensure numbers are numbers
         df['sentiment'] = pd.to_numeric(df['sentiment'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
@@ -62,7 +64,7 @@ def get_data():
 raw_df = get_data()
 
 if raw_df.empty:
-    st.error("⚠️ Connection established but no data found. Please wait for the pipeline.")
+    st.error("⚠️ Database Connection Established, but table is empty. Wait for the ETL Pipeline to run.")
     st.stop()
 
 # --- 3. SIDEBAR CONTROLS ---
@@ -80,7 +82,6 @@ if min_time and max_time and min_time != max_time:
         value=(min_time.to_pydatetime(), max_time.to_pydatetime()),
         format="MM/DD HH:mm"
     )
-    # Filter by Time
     mask_time = (raw_df['created_utc'] >= time_range[0]) & (raw_df['created_utc'] <= time_range[1])
     filtered_df = raw_df[mask_time]
 else:
@@ -126,7 +127,6 @@ if 'status' in filtered_df.columns:
 else:
     c2.metric("Critical Threats", 0)
 
-# Safe Average Calculation (Fixes 'nan' error)
 if not filtered_df.empty and 'sentiment' in filtered_df.columns:
     avg_sent = filtered_df['sentiment'].mean()
     if pd.notna(avg_sent):
@@ -146,7 +146,6 @@ tab_geo, tab_analysis, tab_feed = st.tabs(["🌍 Geospatial Ops", "📊 Risk Ana
 
 # TAB 1: MAP
 with tab_geo:
-    # Filter for valid coordinates only
     map_data = filtered_df.dropna(subset=['lat', 'lon'])
     
     if not map_data.empty:
@@ -154,14 +153,14 @@ with tab_geo:
         start_lon = map_data['lon'].mean()
         zoom = 4 if selected_loc != "All Global Regions" else 2
         
+        # IMPORTANT: 'CartoDB positron' is the WHITE map
         m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB positron")
         
-        # Add points with a jitter so overlapping points (same city) can be seen
         for idx, row in map_data.iterrows():
             color = "#FF0000" if row.get('status') == "Critical" else "#FFA500"
             if row.get('status') == "Moderate": color = "#FFD700"
             
-            # Create HTML Popup
+            # Light Mode Popup
             html = f"""
             <div style="font-family: sans-serif; width: 200px; color: #333;">
                 <h5 style="margin:0;">{row['location_name']}</h5>
@@ -227,9 +226,7 @@ with tab_analysis:
 with tab_feed:
     st.subheader("Live Intelligence Feed")
     if not filtered_df.empty:
-        # Define columns to show
         cols = ['created_utc', 'location_name', 'status', 'sentiment', 'text', 'url']
-        # Only show columns that actually exist
         cols = [c for c in cols if c in filtered_df.columns]
         
         st.dataframe(
@@ -241,7 +238,7 @@ with tab_feed:
                 "text": st.column_config.TextColumn("Content", width="large")
             },
             use_container_width=True,
-            hide_index=True  # Hides the 0, 1, 2 index column
+            hide_index=True
         )
     else:
         st.write("No records found.")
