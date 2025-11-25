@@ -4,138 +4,126 @@ import re
 import os
 import datetime
 import time
+import pickle
 import spacy
 from geopy.geocoders import Nominatim
 from sqlalchemy import create_engine
 from textblob import TextBlob
+from nltk.corpus import stopwords
+import nltk
+import contractions
 
-# --- CONFIGURATION ---
+# CONFIG
 REDDIT_ID = os.getenv('REDDIT_CLIENT_ID')
 REDDIT_SECRET = os.getenv('REDDIT_CLIENT_SECRET')
 DB_STRING = os.getenv('DB_CONNECTION_STRING')
 
-# 1. Load NLP Model (Auto-download if missing)
-print("Loading NLP Model...")
+print("Initializing System...")
 try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    print("Downloading model...")
-    os.system("python -m spacy download en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
-
-# 2. Initialize Geocoder (The tool that turns "London" into "51.5, -0.1")
-geolocator = Nominatim(user_agent="crisis_monitor_production_v2")
-
-# Target Communities
-SUBREDDITS = [
-    'mentalhealth', 'depression', 'SuicideWatch', 'anxiety',
-    'stress', 'legaladvice', 'offmychest', 'worldnews' 
-]
-# Added 'legaladvice' and 'offmychest' as they often contain location info
-
-def get_reddit_data():
-    """Connect to Reddit and fetch posts"""
-    if not REDDIT_ID:
-        print("Error: No credentials found.")
-        return []
-
-    reddit = praw.Reddit(
-        client_id=REDDIT_ID,
-        client_secret=REDDIT_SECRET,
-        user_agent='crisis_monitor_v2'
-    )
+    nltk.download('stopwords', quiet=True)
+    try: nlp = spacy.load("en_core_web_sm")
+    except: 
+        os.system("python -m spacy download en_core_web_sm")
+        nlp = spacy.load("en_core_web_sm")
     
-    all_posts = []
-    print("Scanning Reddit...")
-    
+    # Load the Brains
+    with open('vectorizer.pkl', 'rb') as f: vectorizer = pickle.load(f)
+    with open('xgb_model.pkl', 'rb') as f: model = pickle.load(f)
+except Exception as e:
+    print(f"Init Error: {e}")
+    exit()
+
+geolocator = Nominatim(user_agent="crisis_v4_hybrid")
+stop = set(stopwords.words('english')) - {"not", "no"}
+SUBREDDITS = ['mentalhealth', 'depression', 'SuicideWatch', 'anxiety',
+    'stress', 'offmychest', 'lonely', 'BPD', 'ptsd',
+    'socialanxiety', 'bipolar', 'addiction', 'traumatoolbox', 'CPTSD',
+    'selfharm', 'OCD', 'EatingDisorders', 'MentalHealthSupport',
+    'schizophrenia', 'insomnia', 'panicattacks', 'ADHD', 'AskReddit',
+    'worldnews', 'news']
+
+def get_reddit():
+    if not REDDIT_ID: return []
+    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v4')
+    posts = []
     for sub in SUBREDDITS:
         try:
-            # Fetch more posts (50) to increase chance of finding locations
             for post in reddit.subreddit(sub).new(limit=50):
-                all_posts.append({
+                posts.append({
                     'id': post.id,
                     'created_utc': datetime.datetime.fromtimestamp(post.created_utc),
                     'subreddit': sub,
-                    'text': f"{post.title} {post.selftext}"[:1000], # Limit text size
+                    'text': f"{post.title} {post.selftext}"[:2000],
                     'url': post.url
                 })
-        except Exception as e:
-            print(f"Skipped r/{sub}: {e}")
-            
-    return pd.DataFrame(all_posts)
+        except: pass
+    return pd.DataFrame(posts)
 
-def get_risk_score(text):
-    """Simple Sentiment Analysis Risk Score"""
-    blob = TextBlob(str(text))
-    sentiment = blob.sentiment.polarity # -1 to 1
-    # Normalize: -1 (Bad) becomes 1.0 (High Risk)
-    risk = (sentiment * -1) + 0.3 
-    return max(0.0, min(1.0, risk))
+def clean(text):
+    text = str(text).lower()
+    text = contractions.fix(text)
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-z\s]', '', text)
+    return " ".join([w for w in text.split() if w not in stop])
 
-def extract_geolocation(text):
-    """
-    1. Finds a place name using spaCy.
-    2. Converts it to Lat/Lon using Geopy.
-    """
+def get_geo(text):
     doc = nlp(text)
-    
-    # Look for Geopolitical Entities (Cities, Countries, States)
     for ent in doc.ents:
         if ent.label_ in ['GPE', 'LOC']:
-            location_name = ent.text
             try:
-                # Delay to be polite to the API
-                time.sleep(1) 
-                loc = geolocator.geocode(location_name)
-                if loc:
-                    return location_name, loc.latitude, loc.longitude
-            except:
-                continue # Try the next entity if this one fails
-                
-    return None, None, None # No location found
+                time.sleep(0.5)
+                loc = geolocator.geocode(ent.text)
+                if loc: return ent.text, loc.latitude, loc.longitude
+            except: continue
+    return None, None, None
 
-def run_etl():
-    # 1. Extract
-    df = get_reddit_data()
-    if df.empty:
-        print("No data fetched.")
-        return
+def run_pipeline():
+    print("1. Extracting Live Data...")
+    df = get_reddit()
+    if df.empty: return
 
-    print(f"Processing {len(df)} raw posts...")
+    print("2. Two-Stage Analysis...")
+    df['clean'] = df['text'].apply(clean)
+    
+    # STAGE 1: XGBoost Prediction
+    features = vectorizer.transform(df['clean'])
+    df['xgb_pred'] = model.predict(features) # 0=Low, 1=Mod, 2=High
+    
+    # STAGE 2: TextBlob Verification
+    df['sentiment'] = df['clean'].apply(lambda x: TextBlob(x).sentiment.polarity)
+    
+    # LOGIC: Combine them for Final Status
+    def verify_risk(row):
+        # If Model says High Risk (2)
+        if row['xgb_pred'] == 2:
+            if row['sentiment'] < -0.1: return "Critical" # Confirmed
+            else: return "High (Unverified)" # Model says yes, Sentiment says maybe not
+        
+        # If Model says Moderate (1)
+        elif row['xgb_pred'] == 1:
+            if row['sentiment'] < -0.3: return "High (Escalated)" # Sentiment is super bad
+            return "Moderate"
+            
+        return "Low"
 
-    # 2. Transform (Risk)
-    df['risk_score'] = df['text'].apply(get_risk_score)
+    df['status'] = df.apply(verify_risk, axis=1)
     
-    # Filter: Only process locations for risky posts (Score > 0.5) to save time
-    risky_df = df[df['risk_score'] > 0.4].copy()
+    # Only keep risks
+    risky_df = df[df['status'] != "Low"].copy()
     
-    if risky_df.empty:
-        print("No high-risk posts found.")
-        return
-
-    print(f"Geocoding {len(risky_df)} risky posts (this takes time)...")
+    print(f"3. Geocoding {len(risky_df)} alerts...")
+    locs = risky_df['text'].apply(get_geo)
+    risky_df['location_name'] = [x[0] for x in locs]
+    risky_df['lat'] = [x[1] for x in locs]
+    risky_df['lon'] = [x[2] for x in locs]
     
-    # 3. Transform (Location)
-    # Apply function and split result into 3 new columns
-    location_data = risky_df['text'].apply(extract_geolocation)
+    final = risky_df.dropna(subset=['lat'])
     
-    risky_df['location_name'] = [x[0] for x in location_data]
-    risky_df['lat'] = [x[1] for x in location_data]
-    risky_df['lon'] = [x[2] for x in location_data]
-    
-    # DROP rows that didn't have a location
-    final_df = risky_df.dropna(subset=['lat', 'lon'])
-    
-    print(f"Found {len(final_df)} events with confirmed locations.")
-
-    # 4. Load
-    if not final_df.empty:
+    print(f"4. Saving {len(final)} verified events...")
+    if not final.empty:
         engine = create_engine(DB_STRING)
-        try:
-            final_df.to_sql('crisis_events_v2', engine, if_exists='append', index=False)
-            print("Success: Data uploaded to Database.")
-        except Exception as e:
-            print(f"Database Insert Error: {e}")
+        cols = ['id', 'created_utc', 'subreddit', 'text', 'status', 'sentiment', 'url', 'location_name', 'lat', 'lon']
+        final[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False)
 
 if __name__ == "__main__":
-    run_etl()
+    run_pipeline()
