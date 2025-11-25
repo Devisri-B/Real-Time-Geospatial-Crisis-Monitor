@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 import plotly.express as px
 import os
 from datetime import timedelta
-import numpy as np # Make sure to import numpy for random noise
+import numpy as np
 
 # --- 1. CONFIGURATION & STYLE ---
 st.set_page_config(
@@ -15,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for Light Mode
+# Custom CSS
 st.markdown("""
 <style>
     div[data-testid="stMetric"] {
@@ -24,12 +24,11 @@ st.markdown("""
         border-radius: 5px;
         border-left: 5px solid #FF4B4B;
         color: #31333F;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
     .js-plotly-plot .plotly .main-svg {
         background: rgba(0,0,0,0) !important;
     }
-    /* Increase font size for tabs */
     button[data-baseweb="tab"] div p {
         font-size: 18px !important;
         font-weight: 600 !important;
@@ -50,7 +49,7 @@ def get_data():
         df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000", engine)
         df['created_utc'] = pd.to_datetime(df['created_utc'])
         
-        # Data Cleaning: Ensure numerical columns are actually numbers
+        # Ensure numeric types
         df['sentiment'] = pd.to_numeric(df['sentiment'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
@@ -62,13 +61,13 @@ def get_data():
 raw_df = get_data()
 
 if raw_df.empty:
-    st.error("⚠️ Connection established but no data found. Please wait for the pipeline.")
+    st.error("⚠️ Database Connection Established, but table is empty. Wait for the ETL Pipeline to run.")
     st.stop()
 
 # --- 3. SIDEBAR CONTROLS ---
 st.sidebar.header("🎛️ Command Center")
 
-# A. Time Slider
+# A. Time Slider (Optimized)
 min_time = raw_df['created_utc'].min()
 max_time = raw_df['created_utc'].max()
 
@@ -80,7 +79,6 @@ if min_time and max_time and min_time != max_time:
         value=(min_time.to_pydatetime(), max_time.to_pydatetime()),
         format="MM/DD HH:mm"
     )
-    # Filter by Time
     mask_time = (raw_df['created_utc'] >= time_range[0]) & (raw_df['created_utc'] <= time_range[1])
     filtered_df = raw_df[mask_time]
 else:
@@ -101,22 +99,11 @@ if 'location_name' in filtered_df.columns:
     if selected_loc != "All Global Regions":
         filtered_df = filtered_df[filtered_df['location_name'] == selected_loc]
 
-# D. Alert Simulation
-st.sidebar.divider()
-st.sidebar.subheader("🚨 Emergency Dispatch")
-alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
-if st.sidebar.button("Test Alert System"):
-    critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
-    if critical_count > 0:
-        st.sidebar.success(f"✅ Alert Sent: {critical_count} critical events flagged in {selected_loc}")
-    else:
-        st.sidebar.info("No critical events to report at this time.")
-
 # --- 4. MAIN DASHBOARD UI ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
 st.markdown(f"Monitoring **{len(filtered_df)}** active signals.")
 
-# METRICS ROW
+# METRICS
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Active Incidents", len(filtered_df))
 
@@ -126,7 +113,6 @@ if 'status' in filtered_df.columns:
 else:
     c2.metric("Critical Threats", 0)
 
-# Safe Average Calculation (Fixes 'nan' error)
 if not filtered_df.empty and 'sentiment' in filtered_df.columns:
     avg_sent = filtered_df['sentiment'].mean()
     if pd.notna(avg_sent):
@@ -144,9 +130,8 @@ if not filtered_df.empty and 'sentiment' in filtered_df.columns:
 # --- 5. TABS ---
 tab_geo, tab_analysis, tab_feed = st.tabs(["🌍 Geospatial Ops", "📊 Risk Analytics", "📋 Data Feed"])
 
-# TAB 1: MAP
+# TAB 1: MAP (STABILIZED)
 with tab_geo:
-    # Filter for valid coordinates only
     map_data = filtered_df.dropna(subset=['lat', 'lon'])
     
     if not map_data.empty:
@@ -154,12 +139,15 @@ with tab_geo:
         start_lon = map_data['lon'].mean()
         zoom = 4 if selected_loc != "All Global Regions" else 2
         
+        # Initialize Map
         m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB positron")
         
-        # --- JITTER LOGIC (The Fix) ---
-        # We add a tiny random number to each lat/lon so they don't perfectly overlap
+        # Add Points with Jitter
         for idx, row in map_data.iterrows():
-            # Amount of jitter (0.01 is about 1km, 0.001 is about 100m)
+            # Consistent random seed based on ID so markers don't jump around on refresh
+            seed = int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))) 
+            np.random.seed(seed)
+            
             jitter_lat = np.random.uniform(-0.01, 0.01) 
             jitter_lon = np.random.uniform(-0.01, 0.01)
             
@@ -177,7 +165,7 @@ with tab_geo:
             """
             
             folium.CircleMarker(
-                location=[row['lat'] + jitter_lat, row['lon'] + jitter_lon], # Apply jitter here
+                location=[row['lat'] + jitter_lat, row['lon'] + jitter_lon],
                 radius=8,
                 color=color,
                 fill=True,
@@ -186,7 +174,8 @@ with tab_geo:
                 tooltip=row['location_name']
             ).add_to(m)
         
-        st_folium(m, width=None, height=500)
+        # STABILITY FIX: returned_objects=[] prevents reload loops
+        st_folium(m, width=None, height=500, returned_objects=[])
     else:
         st.warning("No valid geolocation data available for map display.")
 
@@ -231,9 +220,7 @@ with tab_analysis:
 with tab_feed:
     st.subheader("Live Intelligence Feed")
     if not filtered_df.empty:
-        # Define columns to show
         cols = ['created_utc', 'location_name', 'status', 'sentiment', 'text', 'url']
-        # Only show columns that actually exist
         cols = [c for c in cols if c in filtered_df.columns]
         
         st.dataframe(
