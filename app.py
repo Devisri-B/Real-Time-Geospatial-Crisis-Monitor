@@ -14,14 +14,33 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for professional metrics
+# Custom CSS 
 st.markdown("""
 <style>
+    /* Existing Light Mode Metrics Style */
     div[data-testid="stMetric"] {
-        background-color: #1E1E1E;
+        background-color: #F0F2F6;
         padding: 15px;
         border-radius: 5px;
         border-left: 5px solid #FF4B4B;
+        color: #31333F;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    /* Force charts to have white background */
+    .js-plotly-plot .plotly .main-svg {
+        background: rgba(0,0,0,0) !important;
+    }
+
+    /* --- INCREASE TAB HEADER SIZE --- */
+    button[data-baseweb="tab"] div p {
+        font-size: 20px !important;  /* Change this number to make it bigger/smaller */
+        font-weight: 600 !important; /* Make it bold */
+    }
+    
+    /* Increase icon size in tabs */
+    button[data-baseweb="tab"] div {
+        gap: 8px; /* Adds space between emoji and text */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -57,7 +76,6 @@ if not raw_df.empty:
     min_time = raw_df['created_utc'].min()
     max_time = raw_df['created_utc'].max()
     
-    # Handle edge case where min and max are same
     if min_time == max_time:
         time_range = (min_time, max_time + timedelta(hours=1))
     else:
@@ -84,14 +102,14 @@ filtered_df = raw_df[mask]
 if selected_loc != "All Global Regions":
     filtered_df = filtered_df[filtered_df['location_name'] == selected_loc]
 
-# D. Alert Simulation (Restored Feature)
+# D. Alert Simulation
 st.sidebar.divider()
 st.sidebar.subheader("🚨 Emergency Dispatch")
 alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
 if st.sidebar.button("Test Alert System"):
     critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
     if critical_count > 0:
-        st.sidebar.success(f"✅ Alert Sent: {critical_count} critical events flagged in {selected_loc}")
+        st.sidebar.success(f" Alert Sent: {critical_count} critical events flagged in {selected_loc}")
     else:
         st.sidebar.info("No critical events to report at this time.")
 
@@ -99,7 +117,7 @@ if st.sidebar.button("Test Alert System"):
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
 st.markdown(f"Monitoring **{len(filtered_df)}** active signals. Last update: {max_time.strftime('%H:%M UTC')}")
 
-# METRICS ROW (Restored)
+# METRICS ROW
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Active Incidents", len(filtered_df))
 c2.metric("Critical Threats", len(filtered_df[filtered_df['status'] == "Critical"]), delta_color="inverse")
@@ -111,26 +129,25 @@ if not filtered_df.empty:
     top_source = filtered_df['subreddit'].mode()[0]
     c4.metric("Primary Source", f"r/{top_source}")
 
-# --- 5. TABS (Map + Analytics + Data) ---
+# --- 5. TABS ---
 tab_geo, tab_analysis, tab_feed = st.tabs(["🌍 Geospatial Ops", "📊 Risk Analytics", "📋 Data Feed"])
 
-# TAB 1: MAP
+# TAB 1: MAP (UPDATED FOR LIGHT MODE)
 with tab_geo:
     if not filtered_df.empty:
-        # Dynamic Center
         start_lat = filtered_df['lat'].mean()
         start_lon = filtered_df['lon'].mean()
         zoom = 4 if selected_loc != "All Global Regions" else 2
         
-        m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB dark_matter")
+        m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB positron")
         
         for idx, row in filtered_df.iterrows():
             color = "#FF0000" if row['status'] == "Critical" else "#FFA500"
-            if row['status'] == "Moderate": color = "#FFFF00"
+            if row['status'] == "Moderate": color = "#FFD700" 
             
-            # Rich Popup
+            # Rich Popup HTML
             html = f"""
-            <div style="font-family: sans-serif; width: 200px;">
+            <div style="font-family: sans-serif; width: 200px; color: #333;">
                 <h5 style="margin:0;">{row['location_name']}</h5>
                 <span style="color:{color}; font-weight:bold;">{row['status']}</span><br>
                 <small>{row['created_utc']}</small>
@@ -152,14 +169,13 @@ with tab_geo:
     else:
         st.warning("No geolocation data available for current filters.")
 
-# TAB 2: ANALYTICS (Restored Charts)
+# TAB 2: ANALYTICS 
 with tab_analysis:
     if not filtered_df.empty:
         c1, c2 = st.columns(2)
         
         with c1:
             st.subheader("Risk vs. Sentiment Correlation")
-            # This chart proves your ML model works (Lower sentiment should = Critical)
             fig_scatter = px.scatter(
                 filtered_df, 
                 x="sentiment", 
@@ -167,7 +183,8 @@ with tab_analysis:
                 color="status",
                 size_max=10,
                 hover_data=["text"],
-                color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "yellow", "Low": "green"}
+                color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "#FFD700", "Low": "green"},
+                template="plotly_white" # <--- Force white background
             )
             st.plotly_chart(fig_scatter, use_container_width=True)
             
@@ -175,7 +192,14 @@ with tab_analysis:
             st.subheader("Incident Volume by Source")
             source_counts = filtered_df['subreddit'].value_counts().reset_index()
             source_counts.columns = ['Subreddit', 'Count']
-            fig_bar = px.bar(source_counts, x='Subreddit', y='Count', color='Count', color_continuous_scale='Reds')
+            fig_bar = px.bar(
+                source_counts, 
+                x='Subreddit', 
+                y='Count', 
+                color='Count', 
+                color_continuous_scale='Reds',
+                template="plotly_white" # <--- Force white background
+            )
             st.plotly_chart(fig_bar, use_container_width=True)
     else:
         st.info("Not enough data to generate analytics.")
