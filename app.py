@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import folium
+from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from sqlalchemy import create_engine
 import plotly.express as px
@@ -15,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS for Light Mode
 st.markdown("""
 <style>
     div[data-testid="stMetric"] {
@@ -49,7 +50,7 @@ def get_data():
         df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000", engine)
         df['created_utc'] = pd.to_datetime(df['created_utc'])
         
-        # Ensure numeric types
+        # Data Cleaning
         df['sentiment'] = pd.to_numeric(df['sentiment'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
@@ -61,13 +62,13 @@ def get_data():
 raw_df = get_data()
 
 if raw_df.empty:
-    st.error("⚠️ Database Connection Established, but table is empty. Wait for the ETL Pipeline to run.")
+    st.error("⚠️ Connection established but no data found. Please wait for the pipeline.")
     st.stop()
 
 # --- 3. SIDEBAR CONTROLS ---
 st.sidebar.header("🎛️ Command Center")
 
-# A. Time Slider (Optimized)
+# A. Time Slider
 min_time = raw_df['created_utc'].min()
 max_time = raw_df['created_utc'].max()
 
@@ -98,6 +99,17 @@ if 'location_name' in filtered_df.columns:
 
     if selected_loc != "All Global Regions":
         filtered_df = filtered_df[filtered_df['location_name'] == selected_loc]
+
+# D. Alert Simulation
+st.sidebar.divider()
+st.sidebar.subheader("🚨 Emergency Dispatch")
+alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
+if st.sidebar.button("Test Alert System"):
+    critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
+    if critical_count > 0:
+        st.sidebar.success(f"✅ Alert Sent: {critical_count} critical events flagged in {selected_loc}")
+    else:
+        st.sidebar.info("No critical events to report at this time.")
 
 # --- 4. MAIN DASHBOARD UI ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
@@ -130,29 +142,30 @@ if not filtered_df.empty and 'sentiment' in filtered_df.columns:
 # --- 5. TABS ---
 tab_geo, tab_analysis, tab_feed = st.tabs(["🌍 Geospatial Ops", "📊 Risk Analytics", "📋 Data Feed"])
 
-# TAB 1: MAP (STABILIZED)
+# TAB 1: MAP (CLUSTERED)
 with tab_geo:
     map_data = filtered_df.dropna(subset=['lat', 'lon'])
     
     if not map_data.empty:
         start_lat = map_data['lat'].mean()
         start_lon = map_data['lon'].mean()
+        # Use a wider zoom if "All" is selected, deeper if a specific region
         zoom = 4 if selected_loc != "All Global Regions" else 2
         
-        # Initialize Map
         m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB positron")
         
-        # Add Points with Jitter
+        # ADD CLUSTER: This groups nearby points automatically
+        marker_cluster = MarkerCluster().add_to(m)
+        
         for idx, row in map_data.iterrows():
-            # Consistent random seed based on ID so markers don't jump around on refresh
+            # Still use jitter so they don't sit perfectly on top of each other inside the cluster
             seed = int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))) 
             np.random.seed(seed)
+            jitter_lat = np.random.uniform(-0.005, 0.005) 
+            jitter_lon = np.random.uniform(-0.005, 0.005)
             
-            jitter_lat = np.random.uniform(-0.01, 0.01) 
-            jitter_lon = np.random.uniform(-0.01, 0.01)
-            
-            color = "#FF0000" if row.get('status') == "Critical" else "#FFA500"
-            if row.get('status') == "Moderate": color = "#FFD700"
+            color = "red" if row.get('status') == "Critical" else "orange"
+            if row.get('status') == "Moderate": color = "gold" # Better visibility than yellow on white map
             
             html = f"""
             <div style="font-family: sans-serif; width: 200px; color: #333;">
@@ -164,17 +177,13 @@ with tab_geo:
             </div>
             """
             
-            folium.CircleMarker(
+            folium.Marker(
                 location=[row['lat'] + jitter_lat, row['lon'] + jitter_lon],
-                radius=8,
-                color=color,
-                fill=True,
-                fill_opacity=0.7,
                 popup=folium.Popup(html, max_width=260),
-                tooltip=row['location_name']
-            ).add_to(m)
+                tooltip=f"{row['location_name']} ({row.get('status')})",
+                icon=folium.Icon(color=color, icon="info-sign")
+            ).add_to(marker_cluster) # Add to cluster, not map directly
         
-        # STABILITY FIX: returned_objects=[] prevents reload loops
         st_folium(m, width=None, height=500, returned_objects=[])
     else:
         st.warning("No valid geolocation data available for map display.")
@@ -183,34 +192,25 @@ with tab_geo:
 with tab_analysis:
     if not filtered_df.empty:
         c1, c2 = st.columns(2)
-        
         with c1:
             st.subheader("Risk vs. Sentiment Correlation")
             if 'sentiment' in filtered_df.columns and 'status' in filtered_df.columns:
                 fig_scatter = px.scatter(
                     filtered_df, 
-                    x="sentiment", 
-                    y="status", 
-                    color="status",
-                    size_max=10,
-                    hover_data=["text"],
-                    color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "#FFD700", "Low": "green"},
+                    x="sentiment", y="status", color="status",
+                    size_max=10, hover_data=["text"],
+                    color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "gold", "Low": "green"},
                     template="plotly_white"
                 )
                 st.plotly_chart(fig_scatter, use_container_width=True)
-        
         with c2:
             st.subheader("Incident Volume by Source")
             if 'subreddit' in filtered_df.columns:
                 source_counts = filtered_df['subreddit'].value_counts().reset_index()
                 source_counts.columns = ['Subreddit', 'Count']
                 fig_bar = px.bar(
-                    source_counts, 
-                    x='Subreddit', 
-                    y='Count', 
-                    color='Count', 
-                    color_continuous_scale='Reds',
-                    template="plotly_white"
+                    source_counts, x='Subreddit', y='Count', color='Count',
+                    color_continuous_scale='Reds', template="plotly_white"
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
     else:
