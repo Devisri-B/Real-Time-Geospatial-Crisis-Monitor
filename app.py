@@ -62,10 +62,37 @@ def get_data():
 raw_df = get_data()
 
 if raw_df.empty:
-    st.error(" Connection established but no data found. Please wait for the pipeline.")
+    st.error("Connection established but no data found. Please wait for the pipeline.")
     st.stop()
 
-# --- 3. SIDEBAR CONTROLS ---
+# --- 3. CALCULATE SCORES (Unified Logic) ---
+if not raw_df.empty:
+    # 1. Calculate Impact Score (0-100)
+    # Base score from AI Risk Class
+    status_map = {"Critical": 90, "High": 75, "Moderate": 50, "Low": 20}
+    raw_df['base_score'] = raw_df['status'].map(status_map).fillna(0)
+    
+    # Modify by Sentiment (Negative sentiment adds urgency)
+    # Sentiment is -1 to 1. We invert it so -1 adds +15 points, +1 removes points.
+    raw_df['impact_score'] = raw_df['base_score'] + (raw_df['sentiment'] * -15)
+    raw_df['impact_score'] = raw_df['impact_score'].clip(0, 100).astype(int)
+
+    # 2. Generate "Explainability" Reason
+    def get_reason(row):
+        reasons = []
+        if row['status'] in ['Critical', 'High']:
+            reasons.append("🚩 AI Model Flag")
+        if row['sentiment'] < -0.3:
+            reasons.append("💔 Negative Sentiment")
+        if "help" in row['text'].lower() or "suicide" in row['text'].lower():
+            reasons.append("💬 Keyword Match")
+        
+        return " + ".join(reasons) if reasons else " General Monitor"
+
+    raw_df['risk_factors'] = raw_df.apply(get_reason, axis=1)
+
+
+# --- 4. SIDEBAR CONTROLS ---
 st.sidebar.header("Command Center")
 
 # A. Time Slider
@@ -103,32 +130,24 @@ if 'location_name' in filtered_df.columns:
 # D. Alert Simulation
 st.sidebar.divider()
 st.sidebar.subheader("Emergency Dispatch")
-alert_email = st.sidebar.text_input("Email", placeholder="admin@xxx.com")
+alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
 if st.sidebar.button("Test Alert System"):
     critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
     if critical_count > 0:
-        st.sidebar.success(f" Alert Sent: {critical_count} critical events flagged in {selected_loc}")
+        st.sidebar.success(f"Alert Sent: {critical_count} critical events flagged in {selected_loc}")
     else:
         st.sidebar.info("No critical events to report at this time.")
 
-# --- 4. MAIN DASHBOARD UI ---
+# --- 5. MAIN DASHBOARD UI ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
-# Calculate Last Updated Time
-if not filtered_df.empty:
-    # Get the newest timestamp from the data
-    latest_time = filtered_df['created_utc'].max()
-    # Format it to look nice (e.g., "November 25, 2025 08:30 UTC")
-    last_updated_str = latest_time.strftime('%B %d, %Y %H:%M UTC')
-else:
-    last_updated_str = "No data available"
-
-# Update the subtitle to include the date
+last_updated_str = raw_df['created_utc'].max().strftime('%B %d, %Y %H:%M UTC')
 st.markdown(f"""
 Monitoring **{len(filtered_df)}** active signals.  
 <span style="color: gray; font-size: 0.9em;">🕒 Last Updated: {last_updated_str}</span>
 """, unsafe_allow_html=True)
 
-# METRICS
+
+# METRICS ROW
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Active Incidents", len(filtered_df))
 
@@ -152,39 +171,35 @@ if not filtered_df.empty and 'sentiment' in filtered_df.columns:
         else:
             c4.metric("Primary Source", "N/A")
 
-# --- 5. TABS ---
+# --- 6. TABS ---
 tab_geo, tab_analysis, tab_feed = st.tabs(["Geospatial Ops", "Risk Analytics", "Data Feed"])
 
-# TAB 1: MAP (CLUSTERED)
+# TAB 1: MAP
 with tab_geo:
     map_data = filtered_df.dropna(subset=['lat', 'lon'])
     
     if not map_data.empty:
         start_lat = map_data['lat'].mean()
         start_lon = map_data['lon'].mean()
-        # Use a wider zoom if "All" is selected, deeper if a specific region
         zoom = 4 if selected_loc != "All Global Regions" else 2
         
         m = folium.Map(location=[start_lat, start_lon], zoom_start=zoom, tiles="CartoDB positron")
-        
-        # ADD CLUSTER: This groups nearby points automatically
         marker_cluster = MarkerCluster().add_to(m)
         
         for idx, row in map_data.iterrows():
-            # use jitter so locations don't sit perfectly on top of each other inside the cluster
             seed = int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))) 
             np.random.seed(seed)
             jitter_lat = np.random.uniform(-0.005, 0.005) 
             jitter_lon = np.random.uniform(-0.005, 0.005)
             
             color = "red" if row.get('status') == "Critical" else "orange"
-            if row.get('status') == "Moderate": color = "gold" 
+            if row.get('status') == "Moderate": color = "gold"
             
             html = f"""
             <div style="font-family: sans-serif; width: 200px; color: #333;">
                 <h5 style="margin:0;">{row['location_name']}</h5>
                 <span style="color:{color}; font-weight:bold;">{row.get('status', 'Unknown')}</span><br>
-                <small>{row['created_utc']}</small>
+                <small>Score: {row['impact_score']}</small><br>
                 <p>{str(row['text'])[:100]}...</p>
                 <a href="{row['url']}" target="_blank">View Source</a>
             </div>
@@ -193,9 +208,9 @@ with tab_geo:
             folium.Marker(
                 location=[row['lat'] + jitter_lat, row['lon'] + jitter_lon],
                 popup=folium.Popup(html, max_width=260),
-                tooltip=f"{row['location_name']} ({row.get('status')})",
-                icon=folium.Icon(color=color, icon="info-sign")
-            ).add_to(marker_cluster) # Add to cluster, not map directly
+                tooltip=f"{row['location_name']} (Score: {row['impact_score']})",
+                icon=folium.Icon(color=color, icon="warning-sign")
+            ).add_to(marker_cluster)
         
         st_folium(m, width=None, height=500, returned_objects=[])
     else:
@@ -211,7 +226,7 @@ with tab_analysis:
                 fig_scatter = px.scatter(
                     filtered_df, 
                     x="sentiment", y="status", color="status",
-                    size_max=10, hover_data=["text"],
+                    size="impact_score", hover_data=["text"],
                     color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "gold", "Low": "green"},
                     template="plotly_white"
                 )
@@ -233,15 +248,20 @@ with tab_analysis:
 with tab_feed:
     st.subheader("Live Intelligence Feed")
     if not filtered_df.empty:
-        cols = ['created_utc', 'location_name', 'status', 'sentiment', 'text', 'url']
+        # Show our new columns!
+        cols = ['created_utc', 'location_name', 'status', 'impact_score', 'risk_factors', 'text', 'url']
         cols = [c for c in cols if c in filtered_df.columns]
         
+        # Sort by Impact Score so the worst stuff is at the top
+        df_sorted = filtered_df.sort_values(by='impact_score', ascending=False)
+
         st.dataframe(
-            filtered_df[cols],
+            df_sorted[cols],
             column_config={
                 "url": st.column_config.LinkColumn("Link"),
-                "sentiment": st.column_config.ProgressColumn("Sentiment", min_value=-1, max_value=1),
+                "impact_score": st.column_config.ProgressColumn("Impact Score", min_value=0, max_value=100, format="%d"),
                 "status": st.column_config.Column("Risk Level"),
+                "risk_factors": st.column_config.Column("Risk Factors"),
                 "text": st.column_config.TextColumn("Content", width="large")
             },
             use_container_width=True,
