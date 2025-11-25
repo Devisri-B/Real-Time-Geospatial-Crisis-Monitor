@@ -19,7 +19,7 @@ REDDIT_SECRET = os.getenv('REDDIT_CLIENT_SECRET')
 DB_STRING = os.getenv('DB_CONNECTION_STRING')
 
 # How many days of data to keep?
-DATA_RETENTION_DAYS = 30 
+DATA_RETENTION_DAYS = 15
 
 # --- INIT MODELS ---
 print("Loading AI Models...")
@@ -120,13 +120,32 @@ def run_pipeline():
     df['risk_class'] = model.predict(features) 
     df['sentiment'] = df['text'].apply(lambda x: TextBlob(str(x)).sentiment.polarity)
 
-    def get_status(row):
-        if row['risk_class'] == 2 and row['sentiment'] < -0.1: return "Critical"
-        if row['risk_class'] >= 1 and row['sentiment'] < -0.2: return "High"
-        if row['risk_class'] >= 1: return "Moderate"
+    def verify_risk(row):
+        r = row['risk_class']
+        s = row['sentiment']
+
+        # Case 1: Model says HIGH RISK (2)
+        if r == 2:
+            if s < -0.05: # Even slightly negative sentiment confirms it
+                return "Critical"
+            return "High" # Trust the model, keep it High even if sentiment is neutral
+
+        # Case 2: Model says MODERATE RISK (1)
+        if r == 1:
+            if s < -0.5: # Extremely negative sentiment -> Escalate
+                return "Critical"
+            if s < -0.15: # Moderately negative -> Escalate
+                return "High"
+            return "Moderate"
+
+        # Case 3: Model says LOW RISK (0)
+        # Safety Net: If model missed it but sentiment is alarming
+        if s < -0.7: 
+            return "Moderate" # Flag for manual review
+            
         return "Low"
 
-    df['status'] = df.apply(get_status, axis=1)
+    df['status'] = df.apply(verify_risk, axis=1)
     active_df = df[df['status'] != "Low"].copy()
     
     print(f"3. Geolocating {len(active_df)} alerts...")
