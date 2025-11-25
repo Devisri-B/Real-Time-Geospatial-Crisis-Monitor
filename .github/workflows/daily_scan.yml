@@ -1,9 +1,9 @@
-name: Real-Time Geospatial Crisis Monitor
+name: Daily Crisis ETL
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Every 6 hours
-  workflow_dispatch:
+    - cron: '0 */6 * * *' # Runs every 6 hours
+  workflow_dispatch:      # Allows you to click "Run Now" manually
 
 jobs:
   run-pipeline:
@@ -13,17 +13,22 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      # SPEED UPGRADE 1: Enable Caching here
+      - name: Set up Python and Cache
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+          cache: 'pip' 
 
+      # SPEED UPGRADE 2: Smart dependency installation
+      # We move the spacy model download INTO the pip install step so it gets cached too.
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
-          python -m spacy download en_core_web_sm
+          # Check if model exists before downloading to save bandwidth
+          python -c "import spacy; spacy.load('en_core_web_sm')" || python -m spacy download en_core_web_sm
 
-      - name: Run ETL Pipeline
+      - name: Run ETL Script
         env:
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}

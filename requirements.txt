@@ -8,8 +8,7 @@ folium
 streamlit-folium
 spacy
 geopy
-xgboost
-scikit-learn
+xgboost==1.7.6
+scikit-learn==1.3.2
+scipy
 plotly
-contractions
-nltk
