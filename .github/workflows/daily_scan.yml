@@ -2,7 +2,7 @@ name: Real-Time Geospatial Crisis Monitor
 
 on:
   schedule:
-    - cron: '0 */4 * * *' # Every 4 hours
+    - cron: '0 */6 * * *' # Every 6 hours
   workflow_dispatch:
 
 jobs:
