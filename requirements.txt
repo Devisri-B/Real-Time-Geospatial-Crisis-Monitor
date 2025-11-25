@@ -8,3 +8,8 @@ folium
 streamlit-folium
 spacy
 geopy
+xgboost
+scikit-learn
+plotly
+contractions
+nltk
