@@ -1,6 +1,7 @@
 # 🛡️ Real-Time Geospatial Crisis Monitor (CrisisGuard)
 A real-time intelligence platform that detects, geolocates, and classifies mental health crises using social media signals and AI.
 - Live Demo: [Launch App](https://real-time-geospatial-crisis-monitor.streamlit.app)
+  
 ![Overview](assets/Overview.png)
 
 ## Project Overview
@@ -52,32 +53,37 @@ One of the biggest challenges in mental health AI is the lack of labeled "Critic
 
 ## Technical Architecture
 
-- Frontend: Streamlit, Folium, Plotly Express.
-- Backend/Automation: Python, GitHub Actions (Cron Jobs).
-- Database: Supabase (PostgreSQL).
-- Machine Learning: XGBoost, Scikit-Learn (KMeans, TF-IDF), Spacy (NER), TextBlob.
-- Geospatial: Geopy (Nominatim), Folium.
+- **Frontend**: Streamlit, Folium, Plotly Express.
+- **Backend/Automation**: Python, GitHub Actions (Cron Jobs).
+- **Database**: Supabase (PostgreSQL).
+- **Machine Learning**: XGBoost, Scikit-Learn (KMeans, TF-IDF), Spacy (NER), TextBlob.
+- **Geospatial**: Geopy (Nominatim), Folium.
 
 ## Application Tour & Analytics
 ###  Live Data Feed
 A transparent, raw view of the incoming stream, allowing analysts to verify specific row-level data, risk drivers, and sentiment scores.
+
  ![LiveMap](assets/Livedata.png)
 ### Mapped Analysis
 For incidents where a location was successfully extracted, the dashboard provides deep regional insights:
-- Hotspot Locations & Sentiment: Compares incident volume by country/city alongside the average sentiment polarity.
+- *Hotspot Locations & Sentiment*: Compares incident volume by country/city alongside the average sentiment polarity.
+  
   ![Mapped_location](assets/Mapped_Loc.png)
-- Sources & Risk Distribution: Breaks down which subreddits are driving geospatial risk and visualizes the balance of Critical vs. Moderate threats.
+- *Sources & Risk Distribution*: Breaks down which subreddits are driving geospatial risk and visualizes the balance of Critical vs. Moderate threats.
+  
   ![Mapped_Risk](assets/Mapped_risk.png)
-- Timeline of Events: A histogram showing the frequency of mapped crisis signals over time.
+- *Timeline of Events*: A histogram showing the frequency of mapped crisis signals over time.
+  
   ![Mapped_Timeline](assets/Mapped_Timeline.png)
 
 ### Unmapped Intelligence
 
 A critical component for analyzing the "Silent Majority" of posts that lack geographic keywords.
-
-- Sources & Risk: Identifies which communities are most active, even without location data.
+- *Sources & Risk*: Identifies which communities are most active, even without location data.
+  
   ![Unmapped_Risk](assets/Unmapped_Risk.png)
-- Hidden Timeline: Tracks the volume of non-geolocated posts to spot global trends or outages.
+- *Hidden Timeline*: Tracks the volume of non-geolocated posts to spot global trends or outages.
+  
   ![Unmapped_Timeline](assets/Unmapped_Timeline.png)
 
 ## How to Run Locally
@@ -121,7 +127,9 @@ Launch the Dashboard
 
 `streamlit run app.py`
 
+## Contributing
 
+Contributions are welcome! Please open issues or submit pull requests to suggest improvements or new features.
 
 
 
