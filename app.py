@@ -37,6 +37,13 @@ def get_data():
     try:
         engine = create_engine(DB_STRING)
         df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 2000", engine)
+        
+        # FIX: Ensure columns exist even if empty
+        required_cols = ['created_utc', 'sentiment', 'lat', 'lon', 'text', 'status', 'location_name', 'subreddit', 'url', 'impact_score', 'risk_factors']
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = None
+                
         df['created_utc'] = pd.to_datetime(df['created_utc'])
         df['sentiment'] = pd.to_numeric(df['sentiment'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
@@ -46,7 +53,10 @@ def get_data():
         if 'text' in df.columns:
             df['short_text'] = df['text'].astype(str).str.slice(0, 60) + "..."
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        # FIX: Show the actual error to help debugging
+        st.error(f"Database Connection Error: {e}")
+        return pd.DataFrame()
 
 raw_df = get_data()
 

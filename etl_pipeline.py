@@ -25,35 +25,33 @@ DATA_RETENTION_DAYS = 30
 print("Loading AI Models...")
 try:
     nltk.download('stopwords', quiet=True)
-    try: nlp = spacy.load("en_core_web_md") # Try MD first for better locations
+    try: nlp = spacy.load("en_core_web_md")
     except: 
         os.system("python -m spacy download en_core_web_md")
         nlp = spacy.load("en_core_web_md")
     
     with open('vectorizer.pkl', 'rb') as f: vectorizer = pickle.load(f)
     
-    # Load JSON model to avoid warnings
     model = XGBClassifier()
     model.load_model("xgb_model.json")
 except Exception as e:
     print(f"Model Loading Failed: {e}")
     exit()
 
-geolocator = Nominatim(user_agent="crisis_monitor_v12_strict3")
+geolocator = Nominatim(user_agent="crisis_monitor_v13_robust")
 stop = set(stopwords.words('english')) - {"not", "no"}
-SUBREDDITS = [   'mentalhealth', 'depression', 'SuicideWatch', 'anxiety', 'stress',
+SUBREDDITS = ['mentalhealth', 'depression', 'SuicideWatch', 'anxiety', 'stress',
     'offmychest', 'lonely', 'BPD', 'ptsd', 'socialanxiety', 'bipolar',
     'addiction', 'traumatoolbox', 'CPTSD', 'selfharm', 'OCD',
     'EatingDisorders', 'MentalHealthSupport', 'schizophrenia',
-    'insomnia', 'panicattacks', 'ADHD', 'AskReddit']
+    'insomnia', 'panicattacks', 'ADHD']
 
 def get_reddit():
     if not REDDIT_ID: return []
-    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v12')
+    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v13')
     posts = []
     for sub in SUBREDDITS:
         try:
-            # 110 posts per sub to get volume
             for post in reddit.subreddit(sub).new(limit=110):
                 posts.append({
                     'id': post.id,
@@ -88,28 +86,31 @@ def smart_geocode(text):
         except: continue
     return None, None, None
 
-def filter_existing_posts(df, engine):
+def get_db_engine():
+    """Creates a robust engine that checks connection health."""
+    return create_engine(DB_STRING, pool_pre_ping=True)
+
+def filter_existing_posts(df):
     if df.empty: return df
     new_ids = tuple(df['id'].tolist())
     if not new_ids: return df
+    
+    engine = get_db_engine()
     try:
         with engine.connect() as conn:
             query = text("SELECT id FROM crisis_events_v4 WHERE id IN :ids")
             existing = pd.read_sql(query, conn, params={"ids": new_ids})
             existing_ids = set(existing['id'].tolist())
         return df[~df['id'].isin(existing_ids)]
-    except: return df
+    except Exception as e:
+        # If table doesn't exist, this is fine
+        print(f"   - Deduplication info: {e}")
+        return df
 
 def calculate_strict_risk(row, features):
-    """
-    3-LEVEL LOGIC: Critical, Moderate, Low.
-    Matches the 3 clusters from training (0, 1, 2).
-    """
-    # 1. Model Assessment (Probabilities)
+    # 1. Model Assessment
     try:
         probs = model.predict_proba(features)[0]
-        # Get the single class with highest probability
-        # 0=Low, 1=Moderate, 2=Critical
         pred_class = np.argmax(probs) 
         prob_crit = probs[2]
     except:
@@ -118,14 +119,14 @@ def calculate_strict_risk(row, features):
 
     # 2. Sentiment Assessment
     sentiment = row['textblob_score']
-    if sentiment < -0.3: sent_class = 2     # Critical
-    elif sentiment < -0.05: sent_class = 1  # Moderate
+    if sentiment < -0.3: sent_class = 2     
+    elif sentiment < -0.05: sent_class = 1  
     else: sent_class = 0
 
-    # 3. Max Strategy (Take the worst case)
+    # 3. Max Strategy
     final_class = max(pred_class, sent_class)
 
-    # 4. Strict Mapping (NO 'HIGH')
+    # 4. Strict Mapping
     mapping = {2: "Critical", 1: "Moderate", 0: "Low"}
     status = mapping[final_class]
 
@@ -133,8 +134,7 @@ def calculate_strict_risk(row, features):
     reasons = []
     if pred_class == 2: reasons.append(f"Model Pattern ({int(prob_crit*100)}%)")
     if sent_class == 2: reasons.append(f"Sentiment ({sentiment:.2f})")
-
-
+    
     if not reasons and final_class > 0: reasons.append("Potential Risk")
     
     risk_factors = " + ".join(reasons) if reasons else "Low Risk"
@@ -142,7 +142,7 @@ def calculate_strict_risk(row, features):
     return status, risk_factors
 
 def cleanup_old_data():
-    engine = create_engine(DB_STRING)
+    engine = get_db_engine()
     cutoff = datetime.datetime.now() - datetime.timedelta(days=DATA_RETENTION_DAYS)
     try:
         with engine.connect() as conn:
@@ -155,8 +155,7 @@ def run_pipeline():
     df = get_reddit()
     if df.empty: return
 
-    engine = create_engine(DB_STRING)
-    df = filter_existing_posts(df, engine)
+    df = filter_existing_posts(df)
 
     if df.empty:
         print("   - No new posts.")
@@ -178,13 +177,8 @@ def run_pipeline():
     df['risk_factors'] = factors
     df['sentiment'] = df['textblob_score']
 
-    # Keep all data, even Low risk, for the feed (Optional: filter out Low if DB fills up)
-    # df = df[df['status'] != "Low"] 
-    
     print(f"3. Geolocating {len(df)} posts...")
     geo_results = df['text'].apply(smart_geocode)
-    
-    # Fill None for missing locations
     df['location_name'] = [res[0] if res else None for res in geo_results]
     df['lat'] = [res[1] if res else None for res in geo_results]
     df['lon'] = [res[2] if res else None for res in geo_results]
@@ -192,8 +186,10 @@ def run_pipeline():
     print(f"4. Saving {len(df)} rows...")
     if not df.empty:
         cols = ['id', 'created_utc', 'subreddit', 'text', 'status', 'sentiment', 'risk_factors', 'url', 'location_name', 'lat', 'lon']
+        engine = get_db_engine()
         try:
-            df[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False)
+            # FIX: Use chunksize to prevent timeouts
+            df[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False, chunksize=500)
             print("   - Success.")
         except Exception as e:
             print(f"   - DB Error: {e}")
