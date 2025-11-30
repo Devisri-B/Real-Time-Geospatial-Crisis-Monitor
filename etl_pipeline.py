@@ -19,7 +19,7 @@ from xgboost import XGBClassifier
 REDDIT_ID = os.getenv('REDDIT_CLIENT_ID')
 REDDIT_SECRET = os.getenv('REDDIT_CLIENT_SECRET')
 DB_STRING = os.getenv('DB_CONNECTION_STRING')
-DATA_RETENTION_DAYS = 30
+DATA_RETENTION_DAYS = 15
 
 # --- INIT MODELS ---
 print("Loading AI Models...")
@@ -155,6 +155,13 @@ def run_pipeline():
     df = get_reddit()
     if df.empty: return
 
+    # --- FIX 1: Deduplicate Cross-Posts in the current batch ---
+    # If the same text appears multiple times (different subreddits), keep only the first one
+    initial_count = len(df)
+    df = df.drop_duplicates(subset=['text'])
+    print(f"   - Removed {initial_count - len(df)} cross-posts from batch.")
+
+    # --- FIX 2: Filter IDs that already exist in DB ---
     df = filter_existing_posts(df)
 
     if df.empty:

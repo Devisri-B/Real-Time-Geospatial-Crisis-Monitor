@@ -111,6 +111,9 @@ if st.sidebar.button("Test Alert System"):
     # Filter for Critical events in the current view
     critical_events = filtered_df[filtered_df['status'] == 'Critical']
     
+    # This keeps the first instance and drops cross-posts
+    critical_events = critical_events.drop_duplicates(subset=['text'])
+
     if not critical_events.empty:
         # --- 1. Prepare Rich Email Content ---
         count = len(critical_events)
@@ -131,8 +134,8 @@ if st.sidebar.button("Test Alert System"):
         TOP PRIORITY INCIDENTS (High to Low Risk):
         """
         
-        # Sort by Impact Score to show worst first, limit to top 10
-        top_incidents = critical_events.sort_values('impact_score', ascending=False).head(10)
+        # Sort by Impact Score to show worst first, limit to top 5
+        top_incidents = critical_events.sort_values('impact_score', ascending=False).head(5)
         
         for i, row in top_incidents.iterrows():
             # Handle missing values gracefully
