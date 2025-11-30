@@ -33,6 +33,7 @@ The system follows a strict ETL (Extract, Transform, Load) pipeline architecture
 	- **Orchestration**: A **GitHub Action** workflow triggers the pipeline every 6 hours.
 	- **Extraction**: Fetches fresh posts from 20+ subreddits using the Reddit API.
 	- **Storage**: Processed data is upserted into Supabase (PostgreSQL) to prevent duplicates.
+	- **Optimization**: Automatically prunes data older than 15 days to maintain high performance and stay within Supabase free-tier storage limits.
 
 ## Deep Dive: The AI Training Methodology
 One of the biggest challenges in mental health AI is the lack of labeled "Critical" vs "Moderate" data. I solved this using a Semi-Supervised workflow combining static datasets with live streaming data.
