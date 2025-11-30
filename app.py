@@ -8,6 +8,8 @@ import plotly.express as px
 import os
 from datetime import timedelta
 import numpy as np
+import smtplib
+from email.mime.text import MIMEText
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="CrisisGuard Intelligence", layout="wide", initial_sidebar_state="expanded")
@@ -102,14 +104,46 @@ else:
 # Alert Simulation
 st.sidebar.divider()
 st.sidebar.subheader("🚨 Emergency Dispatch")
-alert_email = st.sidebar.text_input("Email", placeholder="admin@domain.com")
+alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
+
 if st.sidebar.button("Test Alert System"):
-    if not filtered_df.empty:
-        critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
-        if critical_count > 0:
-            st.sidebar.success(f"Alert Sent: {critical_count} critical events flagged.")
-        else:
-            st.sidebar.info("No critical events.")
+    critical_events = filtered_df[filtered_df['status'] == 'Critical']
+    
+    if not critical_events.empty:
+        # 1. Prepare Email Content
+        count = len(critical_events)
+        subject = f"CrisisGuard ALERT: {count} Critical Incidents Detected"
+        body = f"""
+        URGENT REPORT
+        ---------------------------
+        Region: {selected_loc}
+        Critical Events: {count}
+        
+        Top Incidents:
+        """
+        for i, row in critical_events.head(3).iterrows():
+            body += f"\n- {row['location_name']}: {row['text'][:50]}... (Risk: {row['impact_score']})\n"
+            
+        # 2. Send Email via SMTP
+        try:
+            sender = st.secrets["EMAIL_SENDER"]
+            password = st.secrets["EMAIL_PASSWORD"]
+            
+            msg = MIMEText(body)
+            msg['Subject'] = subject
+            msg['From'] = sender
+            msg['To'] = alert_email
+            
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                server.login(sender, password)
+                server.sendmail(sender, alert_email, msg.as_string())
+                
+            st.sidebar.success(f"Email dispatch sent to {alert_email}")
+            
+        except Exception as e:
+            st.sidebar.error(f"Email Failed: Check Secrets configuration. Error: {e}")
+    else:
+        st.sidebar.info("No critical events to report.")
 
 # --- 5. DASHBOARD ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
@@ -124,7 +158,8 @@ c2.metric("Critical Threats", crit, delta_color="inverse")
 sent = filtered_df['sentiment'].mean() if not filtered_df.empty else 0
 c3.metric("Avg Sentiment", f"{sent:.2f}")
 src = filtered_df['subreddit'].mode()[0] if not filtered_df.empty else "N/A"
-c4.metric("Top Source", f"r/{src}")
+display_src = src if len(src) < 12 else f"{src[:10]}.."
+c4.metric("Top Source", f"r/{display_src}", help=f"Full Name: r/{src}")
 
 # SPLIT DATA into Mapped vs Unmapped
 mapped_df = filtered_df.dropna(subset=['lat', 'lon'])
@@ -181,6 +216,35 @@ with tab_mapped_analysis:
                              color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
                              template="plotly_white")
             st.plotly_chart(fig_pie, use_container_width=True)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Top Sources of Mapped Risk")
+            src_counts = mapped_df['subreddit'].value_counts().head(10).reset_index()
+            src_counts.columns = ['Subreddit', 'Count']
+            fig_src = px.bar(src_counts, x='Subreddit', y='Count', 
+                            title="Volume by Source (Mapped)", template="plotly_white", color_discrete_sequence=['#636EFA'])
+            st.plotly_chart(fig_src, use_container_width=True)
+
+        with c2:
+            st.subheader("Average Sentiment by Location")
+            sent_loc = mapped_df.groupby('location_name')['sentiment'].mean().reset_index().sort_values('sentiment')
+            fig_sent = px.bar(sent_loc, x='sentiment', y='location_name', orientation='h',
+                              title="Avg Sentiment Score", template="plotly_white", color='sentiment')
+            st.plotly_chart(fig_sent, use_container_width=True)
+
+        #    st.subheader("Risk vs. Sentiment Scatter")
+        #     # This chart is "Innovative" because it visually proves your hypothesis:
+        #     # Lower Sentiment (more negative) should correlate with Critical Status.
+        #     fig_scatter = px.scatter(
+        #         filtered_df, 
+        #         x="sentiment", 
+        #         y="status", 
+        #         color="status",
+        #         hover_data=["text"],
+        #         title="Sentiment Polarity vs Risk Classification"
+        #     )
+        #     st.plotly_chart(fig_scatter, use_container_width=True)
             
         st.subheader("Timeline of Mapped Events")
         fig_time = px.histogram(mapped_df, x="created_utc", color="status", 
