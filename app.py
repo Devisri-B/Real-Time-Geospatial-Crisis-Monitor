@@ -36,28 +36,28 @@ except: DB_STRING = os.getenv('DB_CONNECTION_STRING')
 def get_data():
     try:
         engine = create_engine(DB_STRING)
-        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000", engine)
+        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 2000", engine)
         df['created_utc'] = pd.to_datetime(df['created_utc'])
         df['sentiment'] = pd.to_numeric(df['sentiment'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
+        df['short_text'] = df['text'].astype(str).str.slice(0, 60) + "..."
         return df
     except: return pd.DataFrame()
 
 raw_df = get_data()
 
-# --- 3. SCORING LOGIC ---
+# --- 3. SCORING LOGIC (3-LEVEL) ---
 if not raw_df.empty:
-    # Base score from AI Risk Class
-    status_map = {"Critical": 95, "High": 75, "Moderate": 45, "Low": 10}
+    # 3-Level Score Map
+    status_map = {"Critical": 90, "Moderate": 50, "Low": 10}
     raw_df['base_score'] = raw_df['status'].map(status_map).fillna(0)
-
-    # Add small sentiment nuance for sorting
+    
     if 'sentiment' in raw_df.columns:
-        raw_df['impact_score'] = raw_df['base_score'] + (raw_df['sentiment'].fillna(0) * -10)
+        raw_df['impact_score'] = raw_df['base_score'] + (raw_df['sentiment'].fillna(0) * -15)
     else:
         raw_df['impact_score'] = raw_df['base_score']
-
+    
     raw_df['impact_score'] = raw_df['impact_score'].clip(0, 100).astype(int)
 
 # --- 4. CONTROLS ---
@@ -74,32 +74,28 @@ if not raw_df.empty:
 else:
     filtered_df = pd.DataFrame()
 
-if not filtered_df.empty and 'status' in filtered_df.columns:
+if not filtered_df.empty:
     all_statuses = sorted(filtered_df['status'].dropna().unique())
     selected_status = st.sidebar.multiselect("Severity", all_statuses, default=all_statuses)
     if selected_status: filtered_df = filtered_df[filtered_df['status'].isin(selected_status)]
 
-if not filtered_df.empty and 'location_name' in filtered_df.columns:
     all_locs = sorted(filtered_df['location_name'].dropna().unique())
     selected_loc = st.sidebar.selectbox("Region", ["All Global Regions"] + all_locs)
     if selected_loc != "All Global Regions": filtered_df = filtered_df[filtered_df['location_name'] == selected_loc]
 else:
     selected_loc = "All Global Regions"
 
-# D. Alert Simulation
+# Alert Simulation
 st.sidebar.divider()
-st.sidebar.subheader("Emergency Dispatch")
+st.sidebar.subheader("🚨 Emergency Dispatch")
 alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
 if st.sidebar.button("Test Alert System"):
-    if not filtered_df.empty and 'status' in filtered_df.columns:
+    if not filtered_df.empty:
         critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
         if critical_count > 0:
-            st.sidebar.success(f"Alert Sent: {critical_count} critical events flagged in {selected_loc}")
+            st.sidebar.success(f"Alert Sent: {critical_count} critical events flagged.")
         else:
-            st.sidebar.info("No critical events to report at this time.")
-    else:
-        st.sidebar.warning("No data available to alert on.")
-
+            st.sidebar.info("No critical events.")
 
 # --- 5. DASHBOARD ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
@@ -115,7 +111,7 @@ c3.metric("Avg Sentiment", f"{sent:.2f}")
 src = filtered_df['subreddit'].mode()[0] if not filtered_df.empty else "N/A"
 c4.metric("Top Source", f"r/{src}")
 
-tab_geo, tab_anal, tab_list = st.tabs(["Geospatial Ops", "Risk Analytics", "Alert Feed"])
+tab_geo, tab_anal, tab_list = st.tabs(["🌍 Live Map", "📊 Analytics", "📋 Alert Feed"])
 
 with tab_geo:
     if not filtered_df.empty:
@@ -123,17 +119,20 @@ with tab_geo:
         if not map_data.empty:
             m = folium.Map(location=[map_data['lat'].mean(), map_data['lon'].mean()], zoom_start=2, tiles="CartoDB positron")
             marker_cluster = MarkerCluster().add_to(m)
-
+            
             for idx, row in map_data.iterrows():
                 np.random.seed(int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))))
                 jit_lat, jit_lon = np.random.uniform(-0.01, 0.01, 2)
-
-                color = "red" if row['status'] == "Critical" else "orange"
-                if row['status'] == "Moderate": color = "gold"
-
-                pop = f"<b>{row['location_name']}</b><br>{row['status']}<br>{row.get('risk_factors','')}"
+                
+                # STRICT 3-COLOR MAP
+                stat = row['status']
+                if stat == "Critical": color = "red"
+                elif stat == "Moderate": color = "orange"
+                else: color = "green"
+                
+                pop = f"<b>{row['location_name']}</b><br>{stat}<br>{row.get('risk_factors','')}"
                 folium.Marker([row['lat']+jit_lat, row['lon']+jit_lon], popup=folium.Popup(pop, max_width=200), icon=folium.Icon(color=color, icon="warning-sign")).add_to(marker_cluster)
-
+            
             st_folium(m, width=None, height=500, returned_objects=[])
         else: st.warning("No location data.")
     else: st.info("No data.")
@@ -143,25 +142,24 @@ with tab_anal:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Risk vs. Sentiment")
-            if 'sentiment' in filtered_df.columns and 'status' in filtered_df.columns and 'impact_score' in filtered_df.columns:
-                fig_scatter = px.scatter(
-                    filtered_df,
-                    x="sentiment", y="status", color="status",
-                    size="impact_score", hover_data=["text"],
-                    color_discrete_map={"Critical": "red", "High": "orange", "Moderate": "gold", "Low": "green"},
-                    template="plotly_white"
-                )
-                st.plotly_chart(fig_scatter, use_container_width=True)
+            fig_scatter = px.scatter(
+                filtered_df,
+                x="sentiment", y="status", color="status",
+                size="impact_score", hover_data=["short_text"], 
+                # Strict 3 Colors
+                color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                template="plotly_white"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
         with c2:
              st.subheader("Source Volume")
-             if 'subreddit' in filtered_df.columns:
-                source_counts = filtered_df['subreddit'].value_counts().reset_index()
-                source_counts.columns = ['Subreddit', 'Count']
-                fig_bar = px.bar(
-                    source_counts, x='Subreddit', y='Count', color='Count',
-                    color_continuous_scale='Reds', template="plotly_white"
-                )
-                st.plotly_chart(fig_bar, use_container_width=True)
+             source_counts = filtered_df['subreddit'].value_counts().reset_index()
+             source_counts.columns = ['Subreddit', 'Count']
+             fig_bar = px.bar(
+                source_counts, x='Subreddit', y='Count', color='Count',
+                color_continuous_scale='Reds', template="plotly_white"
+             )
+             st.plotly_chart(fig_bar, use_container_width=True)
 
 with tab_list:
     if not filtered_df.empty:

@@ -25,32 +25,31 @@ print("Loading AI Models...")
 try:
     nltk.download('stopwords', quiet=True)
     try: nlp = spacy.load("en_core_web_sm")
-    except: 
+    except:
         os.system("python -m spacy download en_core_web_sm")
         nlp = spacy.load("en_core_web_sm")
-    
+
     with open('vectorizer.pkl', 'rb') as f: vectorizer = pickle.load(f)
     with open('xgb_model.pkl', 'rb') as f: model = pickle.load(f)
 except Exception as e:
     print(f"Model Loading Failed: {e}")
     exit()
 
-geolocator = Nominatim(user_agent="crisis_monitor_v8_maxrisk")
+geolocator = Nominatim(user_agent="crisis_monitor_v10_strict")
 stop = set(stopwords.words('english')) - {"not", "no"}
 SUBREDDITS = ['mentalhealth', 'depression', 'SuicideWatch', 'anxiety',
     'stress', 'offmychest', 'lonely', 'BPD', 'ptsd',
     'socialanxiety', 'bipolar', 'addiction', 'traumatoolbox', 'CPTSD',
     'selfharm', 'OCD', 'EatingDisorders', 'MentalHealthSupport',
-    'schizophrenia', 'insomnia', 'panicattacks', 'ADHD', 'AskReddit',
-    'worldnews', 'news']
+    'schizophrenia', 'insomnia', 'panicattacks', 'ADHD', 'AskReddit']
 
 def get_reddit():
     if not REDDIT_ID: return []
-    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v8')
+    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v10')
     posts = []
     for sub in SUBREDDITS:
         try:
-            for post in reddit.subreddit(sub).new(limit=50):
+            for post in reddit.subreddit(sub).new(limit=10000):
                 posts.append({
                     'id': post.id,
                     'created_utc': datetime.datetime.fromtimestamp(post.created_utc),
@@ -75,7 +74,7 @@ def smart_geocode(text):
     for loc_name in candidates:
         if len(loc_name) < 3 or loc_name.title() in blocklist: continue
         try:
-            time.sleep(1) 
+            time.sleep(1)
             location = geolocator.geocode(loc_name, addressdetails=True, language='en')
             if location and location.raw.get('class') in ['boundary', 'place']:
                 address = location.raw.get('address', {})
@@ -96,54 +95,39 @@ def filter_existing_posts(df, engine):
         return df[~df['id'].isin(existing_ids)]
     except: return df
 
-def calculate_max_risk(row, features):
+def calculate_strict_risk(row, features):
     """
-    Applies MAX-RISK Strategy:
-    If Model says Critical OR Sentiment says Critical -> It is Critical.
+    STRICT 3-LEVEL LOGIC: Critical, Moderate, Low.
     """
-    # 1. Model Assessment (XGBoost)
+    # 1. Model Assessment (Probabilities)
     try:
         probs = model.predict_proba(features)[0]
-        p_critical = probs[2] # Prob of Class 2 (Critical)
-        p_moderate = probs[1] # Prob of Class 1 (Moderate)
+        # Get the single class with highest probability
+        pred_class = np.argmax(probs) # 0=Low, 1=Mod, 2=Crit
     except:
-        p_critical = 0.0
-        p_moderate = 0.0
+        pred_class = 0
 
-    # Define Model Levels (0-3)
-    # Lowered 'Critical' threshold to 0.6 to catch more
-    if p_critical > 0.6: model_level = 3      # Critical
-    elif p_critical > 0.35: model_level = 2   # High
-    elif p_moderate > 0.5: model_level = 1    # Moderate
-    else: model_level = 0
-
-    # 2. Sentiment Assessment (TextBlob)
-    # Range -1.0 to 1.0. Lower is worse.
+    # 2. Sentiment Assessment
     sentiment = row['textblob_score']
-    sent_level = 0
-    if sentiment < -0.5: sent_level = 3       # Critical
-    elif sentiment < -0.2: sent_level = 2     # High
-    elif sentiment < -0.05: sent_level = 1    # Moderate
+    if sentiment < -0.3: sent_class = 2     # Critical
+    elif sentiment < -0.05: sent_class = 1  # Moderate
+    else: sent_class = 0
 
-    # 3. Max Strategy: Pick the worst case
-    final_level = max(model_level, sent_level)
+    # 3. Max Strategy (Take the worst case)
+    final_class = max(pred_class, sent_class)
 
-    # 4. Map to Status
-    mapping = {3: "Critical", 2: "High", 1: "Moderate", 0: "Low"}
-    status = mapping[final_level]
+    # 4. Strict Mapping
+    mapping = {2: "Critical", 1: "Moderate", 0: "Low"}
+    status = mapping[final_class]
 
-    # 5. Explainability (Why did we flag this?)
+    # 5. Explanation
     reasons = []
-    if model_level >= 2:
-        reasons.append(f"Model Flag ({int(p_critical*100)}%)")
-    if sent_level >= 2:
-        reasons.append(f"Negative Sentiment ({sentiment:.2f})")
-    
-    # Fallback explanation if it's moderate but we don't know why
-    if not reasons and final_level > 0:
-        reasons.append("Potential Risk Monitor")
+    if pred_class == 2: reasons.append("AI Model: Critical Pattern")
+    if sent_class == 2: reasons.append(f"Sentiment: Critical ({sentiment:.2f})")
 
-    risk_factors = " + ".join(reasons) if reasons else "Low Risk"
+    if not reasons and final_class > 0: reasons.append("Monitor")
+    
+    risk_factors = " + ".join(reasons) if reasons else "Safe"
 
     return status, risk_factors
 
@@ -163,21 +147,20 @@ def run_pipeline():
 
     engine = create_engine(DB_STRING)
     df = filter_existing_posts(df, engine)
-    
+
     if df.empty:
         print("   - No new posts.")
         return
 
-    print("2. Max-Risk Analysis...")
+    print("2. Strict Risk Analysis...")
     df['clean_text'] = df['text'].apply(clean_for_model)
     tf_idf_matrix = vectorizer.transform(df['clean_text'])
     df['textblob_score'] = df['text'].apply(lambda x: TextBlob(str(x)).sentiment.polarity)
 
     statuses = []
     factors = []
-    
     for i in range(len(df)):
-        status, factor = calculate_max_risk(df.iloc[i], tf_idf_matrix[i])
+        status, factor = calculate_strict_risk(df.iloc[i], tf_idf_matrix[i])
         statuses.append(status)
         factors.append(factor)
 
