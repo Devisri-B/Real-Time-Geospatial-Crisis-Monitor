@@ -41,15 +41,18 @@ def get_data():
         df['sentiment'] = pd.to_numeric(df['sentiment'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
-        df['short_text'] = df['text'].astype(str).str.slice(0, 60) + "..."
+        
+        # Create SHORT text for hover
+        if 'text' in df.columns:
+            df['short_text'] = df['text'].astype(str).str.slice(0, 60) + "..."
         return df
     except: return pd.DataFrame()
 
 raw_df = get_data()
 
-# --- 3. SCORING LOGIC (3-LEVEL) ---
+# --- 3. SCORING LOGIC ---
 if not raw_df.empty:
-    # 3-Level Score Map
+    # Strict 3-Level Map
     status_map = {"Critical": 90, "Moderate": 50, "Low": 10}
     raw_df['base_score'] = raw_df['status'].map(status_map).fillna(0)
     
@@ -66,6 +69,7 @@ st.sidebar.header("Command Center")
 if not raw_df.empty:
     min_time = raw_df['created_utc'].min()
     max_time = raw_df['created_utc'].max()
+    
     if min_time != max_time:
         time_range = st.sidebar.slider("Timeline", min_value=min_time.to_pydatetime(), max_value=max_time.to_pydatetime(), value=(min_time.to_pydatetime(), max_time.to_pydatetime()), format="MM/DD HH:mm")
         filtered_df = raw_df[(raw_df['created_utc'] >= time_range[0]) & (raw_df['created_utc'] <= time_range[1])]
@@ -88,7 +92,7 @@ else:
 # Alert Simulation
 st.sidebar.divider()
 st.sidebar.subheader("🚨 Emergency Dispatch")
-alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
+alert_email = st.sidebar.text_input("Email", placeholder="admin@domain.com")
 if st.sidebar.button("Test Alert System"):
     if not filtered_df.empty:
         critical_count = len(filtered_df[filtered_df['status'] == 'Critical'])
@@ -102,6 +106,7 @@ st.title(f"🛡️ CrisisGuard: {selected_loc}")
 last_upd = raw_df['created_utc'].max().strftime('%B %d, %H:%M UTC') if not raw_df.empty else "N/A"
 st.markdown(f"Monitoring **{len(filtered_df)}** active signals. <span style='color:gray'>Updated: {last_upd}</span>", unsafe_allow_html=True)
 
+# Top Level Metrics
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Active Incidents", len(filtered_df))
 crit = len(filtered_df[filtered_df['status']=="Critical"]) if not filtered_df.empty else 0
@@ -111,57 +116,104 @@ c3.metric("Avg Sentiment", f"{sent:.2f}")
 src = filtered_df['subreddit'].mode()[0] if not filtered_df.empty else "N/A"
 c4.metric("Top Source", f"r/{src}")
 
-tab_geo, tab_anal, tab_list = st.tabs(["🌍 Live Map", "📊 Analytics", "📋 Alert Feed"])
+# SPLIT DATA into Mapped vs Unmapped
+mapped_df = filtered_df.dropna(subset=['lat', 'lon'])
+unmapped_df = filtered_df[filtered_df['lat'].isna()]
 
-with tab_geo:
-    if not filtered_df.empty:
-        map_data = filtered_df.dropna(subset=['lat', 'lon'])
-        if not map_data.empty:
-            m = folium.Map(location=[map_data['lat'].mean(), map_data['lon'].mean()], zoom_start=2, tiles="CartoDB positron")
-            marker_cluster = MarkerCluster().add_to(m)
+# --- TABS ---
+tab_map, tab_mapped_analysis, tab_unmapped_analysis, tab_feed = st.tabs([
+    "Live Map", 
+    "Mapped Analysis", 
+    "Unmapped Intel", 
+    "Data Feed"
+])
+
+# TAB 1: MAP
+with tab_map:
+    if not mapped_df.empty:
+        m = folium.Map(location=[mapped_df['lat'].mean(), mapped_df['lon'].mean()], zoom_start=2, tiles="CartoDB positron")
+        marker_cluster = MarkerCluster().add_to(m)
+        
+        for idx, row in mapped_df.iterrows():
+            np.random.seed(int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))))
+            jit_lat, jit_lon = np.random.uniform(-0.01, 0.01, 2)
             
-            for idx, row in map_data.iterrows():
-                np.random.seed(int(str(ord(row['id'][0])) + str(ord(row['id'][-1]))))
-                jit_lat, jit_lon = np.random.uniform(-0.01, 0.01, 2)
-                
-                # STRICT 3-COLOR MAP
-                stat = row['status']
-                if stat == "Critical": color = "red"
-                elif stat == "Moderate": color = "orange"
-                else: color = "green"
-                
-                pop = f"<b>{row['location_name']}</b><br>{stat}<br>{row.get('risk_factors','')}"
-                folium.Marker([row['lat']+jit_lat, row['lon']+jit_lon], popup=folium.Popup(pop, max_width=200), icon=folium.Icon(color=color, icon="warning-sign")).add_to(marker_cluster)
+            # Strict Colors
+            stat = row['status']
+            if stat == "Critical": color = "red"
+            elif stat == "Moderate": color = "orange"
+            else: color = "green"
             
-            st_folium(m, width=None, height=500, returned_objects=[])
-        else: st.warning("No location data.")
-    else: st.info("No data.")
+            pop = f"<b>{row['location_name']}</b><br>{stat}<br>{row.get('risk_factors','')}"
+            folium.Marker([row['lat']+jit_lat, row['lon']+jit_lon], popup=folium.Popup(pop, max_width=200), icon=folium.Icon(color=color, icon="warning-sign")).add_to(marker_cluster)
+        
+        st_folium(m, width=None, height=500, returned_objects=[])
+    else: st.warning("No location data available.")
 
-with tab_anal:
-    if not filtered_df.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Risk vs. Sentiment")
-            fig_scatter = px.scatter(
-                filtered_df,
-                x="sentiment", y="status", color="status",
-                size="impact_score", hover_data=["short_text"], 
-                # Strict 3 Colors
-                color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
-                template="plotly_white"
-            )
-            st.plotly_chart(fig_scatter, use_container_width=True)
-        with c2:
-             st.subheader("Source Volume")
-             source_counts = filtered_df['subreddit'].value_counts().reset_index()
-             source_counts.columns = ['Subreddit', 'Count']
-             fig_bar = px.bar(
-                source_counts, x='Subreddit', y='Count', color='Count',
-                color_continuous_scale='Reds', template="plotly_white"
-             )
-             st.plotly_chart(fig_bar, use_container_width=True)
+# TAB 2: MAPPED ANALYSIS
+with tab_mapped_analysis:
+    if not mapped_df.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Hotspot Locations")
+            # Bar chart of Top 10 Locations
+            loc_counts = mapped_df['location_name'].value_counts().head(10).reset_index()
+            loc_counts.columns = ['Location', 'Count']
+            fig_loc = px.bar(loc_counts, x='Count', y='Location', orientation='h', 
+                             title="Incidents by Region", template="plotly_white", color='Count')
+            st.plotly_chart(fig_loc, use_container_width=True)
+            
+        with col2:
+            st.subheader("Risk Distribution (Geolocated)")
+            fig_pie = px.pie(mapped_df, names='status', title="Severity of Mapped Events",
+                             color='status',
+                             color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                             template="plotly_white")
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        st.subheader("Timeline of Mapped Events")
+        fig_time = px.histogram(mapped_df, x="created_utc", color="status", 
+                                color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                                template="plotly_white")
+        st.plotly_chart(fig_time, use_container_width=True)
+    else:
+        st.info("No geolocated data to analyze.")
 
-with tab_list:
+# TAB 3: UNMAPPED ANALYSIS
+with tab_unmapped_analysis:
+    if not unmapped_df.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Top Sources of Hidden Risk")
+            # Since we don't have location, Source (Subreddit) is the best proxy
+            src_counts = unmapped_df['subreddit'].value_counts().head(10).reset_index()
+            src_counts.columns = ['Subreddit', 'Count']
+            fig_src = px.bar(src_counts, x='Subreddit', y='Count', 
+                             title="Volume by Source (Unmapped)", template="plotly_white", color_discrete_sequence=['#636EFA'])
+            st.plotly_chart(fig_src, use_container_width=True)
+            
+        with col2:
+            st.subheader("Risk Distribution (Hidden)")
+            fig_pie_un = px.pie(unmapped_df, names='status', title="Severity of Unmapped Events",
+                                color='status',
+                                color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                                template="plotly_white")
+            st.plotly_chart(fig_pie_un, use_container_width=True)
+            
+        st.subheader("Timeline of Hidden Events")
+        fig_time_un = px.histogram(unmapped_df, x="created_utc", color="status", 
+                                   color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                                   template="plotly_white")
+        st.plotly_chart(fig_time_un, use_container_width=True)
+        
+        st.markdown(f"**Insight:** There are **{len(unmapped_df)}** incidents that could not be geolocated. These often represent generalized anxiety or posts lacking specific geographic keywords.")
+    else:
+        st.success("All current data has been successfully geolocated!")
+
+# TAB 4: FULL FEED
+with tab_feed:
     if not filtered_df.empty:
         cols = ['created_utc', 'location_name', 'status', 'impact_score', 'risk_factors', 'text', 'url']
         cols = [c for c in cols if c in filtered_df.columns]
@@ -179,3 +231,5 @@ with tab_list:
             use_container_width=True,
             hide_index=True
         )
+    else:
+        st.write("No records found.")

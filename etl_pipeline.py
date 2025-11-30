@@ -13,6 +13,7 @@ import contractions
 import nltk
 from nltk.corpus import stopwords
 import numpy as np
+from xgboost import XGBClassifier
 
 # --- CONFIG ---
 REDDIT_ID = os.getenv('REDDIT_CLIENT_ID')
@@ -24,32 +25,36 @@ DATA_RETENTION_DAYS = 30
 print("Loading AI Models...")
 try:
     nltk.download('stopwords', quiet=True)
-    try: nlp = spacy.load("en_core_web_sm")
-    except:
-        os.system("python -m spacy download en_core_web_sm")
-        nlp = spacy.load("en_core_web_sm")
-
+    try: nlp = spacy.load("en_core_web_md") # Try MD first for better locations
+    except: 
+        os.system("python -m spacy download en_core_web_md")
+        nlp = spacy.load("en_core_web_md")
+    
     with open('vectorizer.pkl', 'rb') as f: vectorizer = pickle.load(f)
-    with open('xgb_model.pkl', 'rb') as f: model = pickle.load(f)
+    
+    # Load JSON model to avoid warnings
+    model = XGBClassifier()
+    model.load_model("xgb_model.json")
 except Exception as e:
     print(f"Model Loading Failed: {e}")
     exit()
 
-geolocator = Nominatim(user_agent="crisis_monitor_v10_strict")
+geolocator = Nominatim(user_agent="crisis_monitor_v12_strict3")
 stop = set(stopwords.words('english')) - {"not", "no"}
-SUBREDDITS = ['mentalhealth', 'depression', 'SuicideWatch', 'anxiety',
-    'stress', 'offmychest', 'lonely', 'BPD', 'ptsd',
-    'socialanxiety', 'bipolar', 'addiction', 'traumatoolbox', 'CPTSD',
-    'selfharm', 'OCD', 'EatingDisorders', 'MentalHealthSupport',
-    'schizophrenia', 'insomnia', 'panicattacks', 'ADHD', 'AskReddit']
+SUBREDDITS = [   'mentalhealth', 'depression', 'SuicideWatch', 'anxiety', 'stress',
+    'offmychest', 'lonely', 'BPD', 'ptsd', 'socialanxiety', 'bipolar',
+    'addiction', 'traumatoolbox', 'CPTSD', 'selfharm', 'OCD',
+    'EatingDisorders', 'MentalHealthSupport', 'schizophrenia',
+    'insomnia', 'panicattacks', 'ADHD', 'AskReddit']
 
 def get_reddit():
     if not REDDIT_ID: return []
-    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v10')
+    reddit = praw.Reddit(client_id=REDDIT_ID, client_secret=REDDIT_SECRET, user_agent='crisis_v12')
     posts = []
     for sub in SUBREDDITS:
         try:
-            for post in reddit.subreddit(sub).new(limit=10000):
+            # 110 posts per sub to get volume
+            for post in reddit.subreddit(sub).new(limit=110):
                 posts.append({
                     'id': post.id,
                     'created_utc': datetime.datetime.fromtimestamp(post.created_utc),
@@ -74,7 +79,7 @@ def smart_geocode(text):
     for loc_name in candidates:
         if len(loc_name) < 3 or loc_name.title() in blocklist: continue
         try:
-            time.sleep(1)
+            time.sleep(1) 
             location = geolocator.geocode(loc_name, addressdetails=True, language='en')
             if location and location.raw.get('class') in ['boundary', 'place']:
                 address = location.raw.get('address', {})
@@ -97,15 +102,19 @@ def filter_existing_posts(df, engine):
 
 def calculate_strict_risk(row, features):
     """
-    STRICT 3-LEVEL LOGIC: Critical, Moderate, Low.
+    3-LEVEL LOGIC: Critical, Moderate, Low.
+    Matches the 3 clusters from training (0, 1, 2).
     """
     # 1. Model Assessment (Probabilities)
     try:
         probs = model.predict_proba(features)[0]
         # Get the single class with highest probability
-        pred_class = np.argmax(probs) # 0=Low, 1=Mod, 2=Crit
+        # 0=Low, 1=Moderate, 2=Critical
+        pred_class = np.argmax(probs) 
+        prob_crit = probs[2]
     except:
         pred_class = 0
+        prob_crit = 0.0
 
     # 2. Sentiment Assessment
     sentiment = row['textblob_score']
@@ -116,18 +125,19 @@ def calculate_strict_risk(row, features):
     # 3. Max Strategy (Take the worst case)
     final_class = max(pred_class, sent_class)
 
-    # 4. Strict Mapping
+    # 4. Strict Mapping (NO 'HIGH')
     mapping = {2: "Critical", 1: "Moderate", 0: "Low"}
     status = mapping[final_class]
 
-    # 5. Explanation
+    # 5. Explainability
     reasons = []
-    if pred_class == 2: reasons.append("AI Model: Critical Pattern")
-    if sent_class == 2: reasons.append(f"Sentiment: Critical ({sentiment:.2f})")
+    if pred_class == 2: reasons.append(f"Model Pattern ({int(prob_crit*100)}%)")
+    if sent_class == 2: reasons.append(f"Sentiment ({sentiment:.2f})")
 
-    if not reasons and final_class > 0: reasons.append("Monitor")
+
+    if not reasons and final_class > 0: reasons.append("Potential Risk")
     
-    risk_factors = " + ".join(reasons) if reasons else "Safe"
+    risk_factors = " + ".join(reasons) if reasons else "Low Risk"
 
     return status, risk_factors
 
@@ -152,7 +162,7 @@ def run_pipeline():
         print("   - No new posts.")
         return
 
-    print("2. Strict Risk Analysis...")
+    print("2. Strict 3-Level Analysis...")
     df['clean_text'] = df['text'].apply(clean_for_model)
     tf_idf_matrix = vectorizer.transform(df['clean_text'])
     df['textblob_score'] = df['text'].apply(lambda x: TextBlob(str(x)).sentiment.polarity)
@@ -168,21 +178,22 @@ def run_pipeline():
     df['risk_factors'] = factors
     df['sentiment'] = df['textblob_score']
 
-    active_df = df[df['status'] != "Low"].copy()
+    # Keep all data, even Low risk, for the feed (Optional: filter out Low if DB fills up)
+    # df = df[df['status'] != "Low"] 
     
-    print(f"3. Geolocating {len(active_df)} alerts...")
-    geo_results = active_df['text'].apply(smart_geocode)
-    active_df['location_name'] = [res[0] for res in geo_results]
-    active_df['lat'] = [res[1] for res in geo_results]
-    active_df['lon'] = [res[2] for res in geo_results]
+    print(f"3. Geolocating {len(df)} posts...")
+    geo_results = df['text'].apply(smart_geocode)
     
-    final_df = active_df.dropna(subset=['lat'])
+    # Fill None for missing locations
+    df['location_name'] = [res[0] if res else None for res in geo_results]
+    df['lat'] = [res[1] if res else None for res in geo_results]
+    df['lon'] = [res[2] if res else None for res in geo_results]
     
-    print(f"4. Saving {len(final_df)} rows...")
-    if not final_df.empty:
+    print(f"4. Saving {len(df)} rows...")
+    if not df.empty:
         cols = ['id', 'created_utc', 'subreddit', 'text', 'status', 'sentiment', 'risk_factors', 'url', 'location_name', 'lat', 'lon']
         try:
-            final_df[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False)
+            df[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False)
             print("   - Success.")
         except Exception as e:
             print(f"   - DB Error: {e}")
