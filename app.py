@@ -104,10 +104,10 @@ else:
 
 # D. REAL Alert System
 st.sidebar.divider()
-st.sidebar.subheader("🚨 Emergency Dispatch")
+st.sidebar.subheader("Emergency Dispatch")
 alert_email = st.sidebar.text_input("Email", placeholder="admin@domain.com", help="Email to send Critical Incident Alerts", key="alert_email")
 
-if st.sidebar.button("Send Alert"):
+if st.sidebar.button("Send Critical Alert"):
     # Filter for Critical events in the current view
     critical_events = filtered_df[filtered_df['status'] == 'Critical']
     
