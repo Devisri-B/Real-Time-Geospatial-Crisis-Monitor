@@ -158,7 +158,7 @@ c2.metric("Critical Threats", crit, delta_color="inverse")
 sent = filtered_df['sentiment'].mean() if not filtered_df.empty else 0
 c3.metric("Avg Sentiment", f"{sent:.2f}")
 src = filtered_df['subreddit'].mode()[0] if not filtered_df.empty else "N/A"
-display_src = src if len(src) < 12 else f"{src[:10]}.."
+display_src = src if len(src) < 20 else f"{src[:20]}.."
 c4.metric("Top Source", f"r/{display_src}", help=f"Full Name: r/{src}")
 
 # SPLIT DATA into Mapped vs Unmapped
@@ -188,12 +188,21 @@ with tab_map:
             if stat == "Critical": color = "red"
             elif stat == "Moderate": color = "orange"
             else: color = "green"
-            
-            pop = f"<b>{row['location_name']}</b><br>{stat}<br>{row.get('risk_factors','')}"
-            folium.Marker([row['lat']+jit_lat, row['lon']+jit_lon], popup=folium.Popup(pop, max_width=200), icon=folium.Icon(color=color, icon="warning-sign")).add_to(marker_cluster)
+             # Rich Popup
+            html = f"""
+            <div style="font-family: sans-serif; width: 200px;">
+                <h5 style="margin:0;">{row['location_name']}</h5>
+                <span style="color:{color}; font-weight:bold;">{row['status']}</span><br>
+                <small>{row['created_utc']}</small>
+                <p>{row['text'][:100]}...</p>
+                <a href="{row['url']}" target="_blank">View Source</a>
+            </div>
+            """
+            folium.Marker([row['lat']+jit_lat, row['lon']+jit_lon], popup=folium.Popup(html, max_width=260), icon=folium.Icon(color=color, icon="warning-sign")).add_to(marker_cluster)
         
         st_folium(m, width=None, height=500, returned_objects=[])
     else: st.warning("No location data available.")
+
 
 # TAB 2: MAPPED ANALYSIS
 with tab_mapped_analysis:
@@ -210,12 +219,12 @@ with tab_mapped_analysis:
             st.plotly_chart(fig_loc, use_container_width=True)
             
         with col2:
-            st.subheader("Risk Distribution (Geolocated)")
-            fig_pie = px.pie(mapped_df, names='status', title="Severity of Mapped Events",
-                             color='status',
-                             color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
-                             template="plotly_white")
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.subheader("Average Sentiment by Location")
+            sent_loc = mapped_df.groupby('location_name')['sentiment'].mean().reset_index().sort_values('sentiment')
+            fig_sent = px.bar(sent_loc, x='sentiment', y='location_name', orientation='h',
+                              title="Avg Sentiment Score", template="plotly_white", color='sentiment')
+            st.plotly_chart(fig_sent, use_container_width=True)
+            
         
         c1, c2 = st.columns(2)
         with c1:
@@ -227,24 +236,13 @@ with tab_mapped_analysis:
             st.plotly_chart(fig_src, use_container_width=True)
 
         with c2:
-            st.subheader("Average Sentiment by Location")
-            sent_loc = mapped_df.groupby('location_name')['sentiment'].mean().reset_index().sort_values('sentiment')
-            fig_sent = px.bar(sent_loc, x='sentiment', y='location_name', orientation='h',
-                              title="Avg Sentiment Score", template="plotly_white", color='sentiment')
-            st.plotly_chart(fig_sent, use_container_width=True)
+            st.subheader("Risk Distribution (Geolocated)")
+            fig_pie = px.pie(mapped_df, names='status', title="Severity of Mapped Events",
+                             color='status',
+                             color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                             template="plotly_white")
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        #    st.subheader("Risk vs. Sentiment Scatter")
-        #     # This chart is "Innovative" because it visually proves your hypothesis:
-        #     # Lower Sentiment (more negative) should correlate with Critical Status.
-        #     fig_scatter = px.scatter(
-        #         filtered_df, 
-        #         x="sentiment", 
-        #         y="status", 
-        #         color="status",
-        #         hover_data=["text"],
-        #         title="Sentiment Polarity vs Risk Classification"
-        #     )
-        #     st.plotly_chart(fig_scatter, use_container_width=True)
             
         st.subheader("Timeline of Mapped Events")
         fig_time = px.histogram(mapped_df, x="created_utc", color="status", 
