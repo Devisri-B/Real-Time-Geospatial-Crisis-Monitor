@@ -101,31 +101,69 @@ if not filtered_df.empty:
 else:
     selected_loc = "All Global Regions"
 
-# Alert Simulation
+# D. REAL Alert System
 st.sidebar.divider()
 st.sidebar.subheader("🚨 Emergency Dispatch")
-alert_email = st.sidebar.text_input("Officer Email", placeholder="admin@agency.gov")
+alert_email = st.sidebar.text_input("Email", placeholder="admin@domain.com", help="Email to send Critical Incident Alerts", key="alert_email")
 
 if st.sidebar.button("Test Alert System"):
+    # Filter for Critical events in the current view
     critical_events = filtered_df[filtered_df['status'] == 'Critical']
     
     if not critical_events.empty:
-        # 1. Prepare Email Content
+        # --- 1. Prepare Rich Email Content ---
         count = len(critical_events)
-        subject = f"CrisisGuard ALERT: {count} Critical Incidents Detected"
-        body = f"""
-        URGENT REPORT
-        ---------------------------
-        Region: {selected_loc}
-        Critical Events: {count}
+        # Get current time for the report header
+        report_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M UTC')
         
-        Top Incidents:
+        subject = f"CrisisGuard ALERT: {count} Critical Incidents in {selected_loc}"
+        
+        # report format
+        body = f"""
+        CRISISGUARD INTELLIGENCE REPORT
+        ==================================================
+        Target Region: {selected_loc}
+        Generated At:  {report_time}
+        Active Threats: {count}
+        ==================================================
+
+        TOP PRIORITY INCIDENTS (High to Low Risk):
         """
-        for i, row in critical_events.head(3).iterrows():
-            body += f"\n- {row['location_name']}: {row['text'][:50]}... (Risk: {row['impact_score']})\n"
+        
+        # Sort by Impact Score to show worst first, limit to top 10
+        top_incidents = critical_events.sort_values('impact_score', ascending=False).head(10)
+        
+        for i, row in top_incidents.iterrows():
+            # Handle missing values gracefully
+            event_time = row['created_utc'].strftime('%Y-%m-%d %H:%M') if pd.notnull(row['created_utc']) else "N/A"
+            score = row.get('impact_score', 'N/A')
+            factors = row.get('risk_factors', 'Unknown Factors')
+            text_snippet = str(row['text'])[:250].replace('\n', ' ') # Clean up newlines for email
             
-        # 2. Send Email via SMTP
+            body += f"""
+            [{i+1}] SEVERITY SCORE: {score}/100
+            --------------------------------------------------
+            • Location:   {row['location_name']}
+            • Detected:   {event_time}
+            • Why Flagged: {factors}
+            • Sentiment:  {row.get('sentiment', 0):.2f}
+            
+            • Intel Snippet: 
+              "{text_snippet}..."
+              
+            • SOURCE LINK: {row['url']}
+            
+            """
+            
+        body += f"""
+        ==================================================
+        End of Report.
+        Please verify all intelligence on the CrisisGuard Dashboard https://real-time-geospatial-crisis-monitor.streamlit.app 
+        """
+            
+        # --- 2. Send Email via SMTP ---
         try:
+            # Load secrets safely
             sender = st.secrets["EMAIL_SENDER"]
             password = st.secrets["EMAIL_PASSWORD"]
             
@@ -134,16 +172,19 @@ if st.sidebar.button("Test Alert System"):
             msg['From'] = sender
             msg['To'] = alert_email
             
+            # Connect to Gmail SMTP
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(sender, password)
                 server.sendmail(sender, alert_email, msg.as_string())
                 
-            st.sidebar.success(f"Email dispatch sent to {alert_email}")
+            st.sidebar.success(f"Detailed Intelligence Report sent to {alert_email}")
             
         except Exception as e:
-            st.sidebar.error(f"Email Failed: Check Secrets configuration. Error: {e}")
+            st.sidebar.error(f"Email Failed. Did you set up st.secrets? Error: {e}")
+            
     else:
-        st.sidebar.info("No critical events to report.")
+        st.sidebar.info("No critical events found matching current filters.")
+
 
 # --- 5. DASHBOARD ---
 st.title(f"🛡️ CrisisGuard: {selected_loc}")
