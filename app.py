@@ -39,7 +39,7 @@ except: DB_STRING = os.getenv('DB_CONNECTION_STRING')
 def get_data():
     try:
         engine = create_engine(DB_STRING)
-        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 10000", engine)
+        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000000", engine)
         
         # FIX: Ensure columns exist even if empty
         required_cols = ['created_utc', 'sentiment', 'lat', 'lon', 'text', 'status', 'location_name', 'subreddit', 'url', 'impact_score', 'risk_factors']
@@ -263,12 +263,14 @@ with tab_map:
 # TAB 2: MAPPED ANALYSIS
 with tab_mapped_analysis:
     if not mapped_df.empty:
+        st.markdown(f"**Insight:** There are **{len(mapped_df)}** geolocated incidents")
+
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Hotspot Locations")
-            # Bar chart of Top 10 Locations
-            loc_counts = mapped_df['location_name'].value_counts().head(10).reset_index()
+            # Bar chart of Top 15 Locations
+            loc_counts = mapped_df['location_name'].value_counts().head(15).reset_index()
             loc_counts.columns = ['Location', 'Count']
             fig_loc = px.bar(loc_counts, x='Count', y='Location', orientation='h', 
                              title="Incidents by Region", template="plotly_white", color='Count')
@@ -285,7 +287,7 @@ with tab_mapped_analysis:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Top Sources of Mapped Risk")
-            src_counts = mapped_df['subreddit'].value_counts().head(10).reset_index()
+            src_counts = mapped_df['subreddit'].value_counts().head(15).reset_index()
             src_counts.columns = ['Subreddit', 'Count']
             fig_src = px.bar(src_counts, x='Subreddit', y='Count', 
                             title="Volume by Source (Mapped)", template="plotly_white", color_discrete_sequence=['#636EFA'])
@@ -305,18 +307,22 @@ with tab_mapped_analysis:
                                 color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
                                 template="plotly_white")
         st.plotly_chart(fig_time, use_container_width=True)
+
+    
     else:
         st.info("No geolocated data to analyze.")
 
 # TAB 3: UNMAPPED ANALYSIS
 with tab_unmapped_analysis:
     if not unmapped_df.empty:
+        st.markdown(f"**Insight:** There are **{len(unmapped_df)}** incidents that could not be geolocated. These are the posts lacking specific geographic keywords.")
+
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Top Sources of Hidden Risk")
             # Since we don't have location, Source (Subreddit) is the best proxy
-            src_counts = unmapped_df['subreddit'].value_counts().head(10).reset_index()
+            src_counts = unmapped_df['subreddit'].value_counts().head(15).reset_index()
             src_counts.columns = ['Subreddit', 'Count']
             fig_src = px.bar(src_counts, x='Subreddit', y='Count', 
                              title="Volume by Source (Unmapped)", template="plotly_white", color_discrete_sequence=['#636EFA'])
@@ -336,7 +342,6 @@ with tab_unmapped_analysis:
                                    template="plotly_white")
         st.plotly_chart(fig_time_un, use_container_width=True)
         
-        st.markdown(f"**Insight:** There are **{len(unmapped_df)}** incidents that could not be geolocated. These often represent generalized anxiety or posts lacking specific geographic keywords.")
     else:
         st.success("All current data has been successfully geolocated!")
 
