@@ -39,7 +39,7 @@ except: DB_STRING = os.getenv('DB_CONNECTION_STRING')
 def get_data():
     try:
         engine = create_engine(DB_STRING)
-        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 2000", engine)
+        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 10000", engine)
         
         # FIX: Ensure columns exist even if empty
         required_cols = ['created_utc', 'sentiment', 'lat', 'lon', 'text', 'status', 'location_name', 'subreddit', 'url', 'impact_score', 'risk_factors']
@@ -84,7 +84,18 @@ if not raw_df.empty:
     max_time = raw_df['created_utc'].max()
     
     if min_time != max_time:
-        time_range = st.sidebar.slider("Timeline", min_value=min_time.to_pydatetime(), max_value=max_time.to_pydatetime(), value=(min_time.to_pydatetime(), max_time.to_pydatetime()), format="MM/DD HH:mm")
+        # Create a dynamic key based on the latest time
+        # This forces the slider to "reset" its position when new data arrives!
+        slider_key = f"slider_{max_time.strftime('%Y%m%d%H%M%S')}"
+        
+        time_range = st.sidebar.slider(
+            "Timeline",
+            min_value=min_time.to_pydatetime(),
+            max_value=max_time.to_pydatetime(),
+            value=(min_time.to_pydatetime(), max_time.to_pydatetime()),
+            format="MM/DD HH:mm",
+            key=slider_key  
+        )
         filtered_df = raw_df[(raw_df['created_utc'] >= time_range[0]) & (raw_df['created_utc'] <= time_range[1])]
     else:
         filtered_df = raw_df.copy()
