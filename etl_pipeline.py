@@ -52,7 +52,7 @@ def get_reddit():
     posts = []
     for sub in SUBREDDITS:
         try:
-            for post in reddit.subreddit(sub).new(limit=110):
+            for post in reddit.subreddit(sub).new(limit=50):
                 posts.append({
                     'id': post.id,
                     'created_utc': datetime.datetime.fromtimestamp(post.created_utc),
@@ -144,18 +144,20 @@ def calculate_strict_risk(row, features):
 def cleanup_old_data():
     engine = get_db_engine()
     cutoff = datetime.datetime.now() - datetime.timedelta(days=DATA_RETENTION_DAYS)
+    print(f"5. Maintenance: Deleting data older than {DATA_RETENTION_DAYS} days...")
     try:
-        with engine.connect() as conn:
-            conn.execute(text(f"DELETE FROM crisis_events_v4 WHERE created_utc < '{cutoff}'"))
-            conn.commit()
-    except: pass
+        with engine.begin() as conn: 
+            result = conn.execute(text(f"DELETE FROM crisis_events_v4 WHERE created_utc < '{cutoff}'"))
+            print(f"   - Cleaned {result.rowcount} old records.")
+    except Exception as e:
+        print(f"   - Cleanup warning: {e}")
 
 def run_pipeline():
     print("1. Extracting...")
     df = get_reddit()
     if df.empty: return
 
-    # --- FIX 1: Deduplicate Cross-Posts in the current batch ---
+    # --- Deduplicate Cross-Posts in the current batch ---
     # If the same text appears multiple times (different subreddits), keep only the first one
     initial_count = len(df)
     df = df.drop_duplicates(subset=['text'])
@@ -167,8 +169,8 @@ def run_pipeline():
     if df.empty:
         print("   - No new posts.")
         return
-
-    print("2. Strict 3-Level Analysis...")
+    
+    print(f"2. Analyzing {len(df)} new posts...")
     df['clean_text'] = df['text'].apply(clean_for_model)
     tf_idf_matrix = vectorizer.transform(df['clean_text'])
     df['textblob_score'] = df['text'].apply(lambda x: TextBlob(str(x)).sentiment.polarity)
@@ -195,8 +197,9 @@ def run_pipeline():
         cols = ['id', 'created_utc', 'subreddit', 'text', 'status', 'sentiment', 'risk_factors', 'url', 'location_name', 'lat', 'lon']
         engine = get_db_engine()
         try:
-            # FIX: Use chunksize to prevent timeouts
-            df[cols].to_sql('crisis_events_v4', engine, if_exists='append', index=False, chunksize=500)
+            # Use chunksize to prevent timeouts
+            with engine.begin() as connection:
+                df[cols].to_sql('crisis_events_v4', connection, if_exists='append', index=False, chunksize=100)
             print("   - Success.")
         except Exception as e:
             print(f"   - DB Error: {e}")

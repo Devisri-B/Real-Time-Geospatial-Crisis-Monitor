@@ -35,11 +35,11 @@ st.markdown("""
 try: DB_STRING = st.secrets["DB_CONNECTION_STRING"]
 except: DB_STRING = os.getenv('DB_CONNECTION_STRING')
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=600)
 def get_data():
     try:
         engine = create_engine(DB_STRING)
-        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 1000000", engine)
+        df = pd.read_sql("SELECT * FROM crisis_events_v4 ORDER BY created_utc DESC LIMIT 2000", engine)
         
         # FIX: Ensure columns exist even if empty
         required_cols = ['created_utc', 'sentiment', 'lat', 'lon', 'text', 'status', 'location_name', 'subreddit', 'url', 'impact_score', 'risk_factors']
