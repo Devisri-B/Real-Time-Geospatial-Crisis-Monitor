@@ -19,7 +19,7 @@ from xgboost import XGBClassifier
 REDDIT_ID = os.getenv('REDDIT_CLIENT_ID')
 REDDIT_SECRET = os.getenv('REDDIT_CLIENT_SECRET')
 DB_STRING = os.getenv('DB_CONNECTION_STRING')
-DATA_RETENTION_DAYS = 15
+DATA_RETENTION_DAYS = 7
 
 # --- INIT MODELS ---
 print("Loading AI Models...")
