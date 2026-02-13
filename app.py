@@ -303,9 +303,11 @@ with tab_mapped_analysis:
 
             
         st.subheader("Timeline of Mapped Events")
-        fig_time = px.histogram(mapped_df, x="created_utc", color="status", 
-                                color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
-                                template="plotly_white")
+        # Aggregate events by hour and status for line chart
+        mapped_time_agg = mapped_df.set_index('created_utc').groupby([pd.Grouper(freq='H'), 'status']).size().reset_index(name='Count')
+        fig_time = px.line(mapped_time_agg, x="created_utc", y="Count", color="status",
+                          color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                          template="plotly_white", markers=True, title="Events Over Time")
         st.plotly_chart(fig_time, use_container_width=True)
 
     
@@ -337,9 +339,11 @@ with tab_unmapped_analysis:
             st.plotly_chart(fig_pie_un, use_container_width=True)
             
         st.subheader("Timeline of Hidden Events")
-        fig_time_un = px.histogram(unmapped_df, x="created_utc", color="status", 
-                                   color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
-                                   template="plotly_white")
+        # Aggregate events by hour and status for line chart
+        unmapped_time_agg = unmapped_df.set_index('created_utc').groupby([pd.Grouper(freq='H'), 'status']).size().reset_index(name='Count')
+        fig_time_un = px.line(unmapped_time_agg, x="created_utc", y="Count", color="status",
+                             color_discrete_map={"Critical": "red", "Moderate": "orange", "Low": "green"},
+                             template="plotly_white", markers=True, title="Events Over Time")
         st.plotly_chart(fig_time_un, use_container_width=True)
         
     else:
